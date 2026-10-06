@@ -1,0 +1,41 @@
+name: Build Windows EXE
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller PyQt5
+      
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed --noconfirm `
+            --hidden-import PyQt5.sip `
+            --collect-all PyQt5 `
+            --name "NCAA05-Team-Browser" `
+            ncaa05_gui.py
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NCAA05-Team-Browser-Windows
+          path: dist/NCAA05-Team-Browser.exe
+      
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/NCAA05-Team-Browser.exe

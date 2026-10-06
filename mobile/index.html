@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>NCAA 2005 Team Browser</title>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: white; }
+  h1 { text-align: center; font-size: 22px; }
+  .subtitle { text-align: center; color: #888; font-size: 13px; margin-bottom: 20px; }
+  #fileInput { display: none; }
+  .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #0f3460; color: white; border: none; border-radius: 8px; font-size: 16px; }
+  #teamList { list-style: none; padding: 0; }
+  #teamList li { padding: 12px; border-bottom: 1px solid #2a2a4a; font-size: 16px; }
+  .notice { background: #2a2a4a; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 13px; color: #aaa; }
+</style>
+</head>
+<body>
+<h1>NCAA Football 2005</h1>
+<div class="subtitle">Team Browser v1.0.0 (Research Preview)</div>
+
+<div class="notice">
+  <strong>Research Preview:</strong> Team browsing only.<br>
+  Player roster editing is under research.<br>
+  Load your LEAGUE.DAT file to browse teams.
+</div>
+
+<button class="btn" onclick="document.getElementById('fileInput').click()">Load LEAGUE.DAT</button>
+<input type="file" id="fileInput" accept=".dat">
+
+<ul id="teamList"></ul>
+
+<script>
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  const buffer = await file.arrayBuffer();
+  const data = new Uint8Array(buffer);
+  
+  // Find team names: pattern \x04\xff<Name>!
+  const teams = [];
+  const decoder = new TextDecoder('ascii');
+  
+  for (let i = 0; i < data.length - 20; i++) {
+    if (data[i] === 0x04 && data[i+1] === 0xFF) {
+      // Find the ! terminator
+      let end = i + 2;
+      while (end < data.length && data[end] !== 0x21 && end - i < 30) end++;
+      if (data[end] === 0x21) {
+        const nameBytes = data.slice(i+2, end);
+        // Check if it's printable ASCII
+        let valid = true;
+        for (let b of nameBytes) {
+          if (b < 32 || b > 126) { valid = false; break; }
+        }
+        if (valid && nameBytes.length > 2) {
+          const name = decoder.decode(nameBytes);
+          if (!teams.includes(name)) teams.push(name);
+        }
+      }
+    }
+  }
+  
+  teams.sort();
+  const list = document.getElementById('teamList');
+  list.innerHTML = '';
+  teams.forEach(team => {
+    const li = document.createElement('li');
+    li.textContent = team;
+    list.appendChild(li);
+  });
+  
+  alert(`Found ${teams.length} teams`);
+});
+</script>
+</body>
+</html>

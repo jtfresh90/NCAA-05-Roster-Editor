@@ -262,6 +262,105 @@ class TerfArchive:
         self.data[offset:offset+size] = new_data
         print(f"Replaced file {index} ({size} bytes)")
     
+    def rebuild_with_replacements(self, replacements):
+        """
+        Rebuild TERF archive with variable-size file replacements.
+        
+        Args:
+            replacements: dict {index: new_data_bytes}
+        
+        Returns:
+            bytes: New TERF archive data (may be larger than original)
+        
+        This allows HD texture replacements where the new texture
+        is larger than the original (e.g., 256x256 instead of 128x128).
+        The DAT file will grow, and the ISO will need to be rebuilt
+        with the larger DAT (FST must be updated).
+        """
+        # Collect all file data (original or replaced)
+        files_data = []
+        for i, (offset, size) in enumerate(self.entries):
+            if i in replacements:
+                files_data.append(bytes(replacements[i]))
+                print(f"  File {i}: replaced {size} -> {len(replacements[i])} bytes")
+            else:
+                files_data.append(bytes(self.data[offset:offset+size]))
+        
+        # Rebuild TERF
+        # Header (16 bytes): TERF, header_len, unknown, file_pad, num_files
+        # DIR1: 'DIR1', dir_len, entries...
+        # DATA: 'DATA', data_len, file data...
+        
+        # Calculate new offsets with file_pad alignment
+        # Files are placed sequentially after DATA header, aligned to file_pad
+        new_data = bytearray()
+        
+        # TERF header (16 bytes) - copy from original
+        new_data.extend(self.data[0:16])
+        
+        # DIR1 section: we'll rebuild it
+        # DIR1 header: 'DIR1' (4) + dir_len (4) = 8 bytes
+        # Then entries: num_files * 8 bytes
+        # dir_len should cover the entries (original was 0x800)
+        dir1_entries_size = self.num_files * 8
+        # Keep dir1_len as original (0x800) for compatibility, or recalculate?
+        # Original dir1_len was 0x800 which is larger than needed (144*8=1152)
+        # We'll keep it the same to avoid breaking offsets
+        new_dir1 = bytearray()
+        new_dir1.extend(b'DIR1')
+        new_dir1.extend(struct.pack('>I', self.dir1_len))
+        
+        # We'll fill in entries after we know the offsets
+        # Reserve space for entries
+        entries_offset_in_dir1 = 8
+        new_dir1.extend(b'\x00' * (self.num_files * 8))
+        
+        # Pad DIR1 to dir1_len
+        while len(new_dir1) < self.dir1_len:
+            new_dir1.append(0)
+        
+        # DATA section
+        # DATA header: 'DATA' (4) + data_len (4) = 8 bytes
+        # Then file data, each aligned to file_pad
+        new_data.extend(new_dir1)
+        
+        # DATA header placeholder
+        data_header_off = len(new_data)
+        new_data.extend(b'DATA')
+        new_data.extend(struct.pack('>I', 0))  # data_len placeholder
+        
+        # Write files with alignment
+        current_offset = len(new_data)
+        new_entries = []
+        
+        for i, fdata in enumerate(files_data):
+            # Align to file_pad
+            pad = (self.file_pad - (current_offset % self.file_pad)) % self.file_pad
+            if pad > 0:
+                new_data.extend(b'\x00' * pad)
+                current_offset += pad
+            
+            new_entries.append((current_offset, len(fdata)))
+            new_data.extend(fdata)
+            current_offset += len(fdata)
+        
+        # Update DIR1 entries
+        for i, (f_off, f_len) in enumerate(new_entries):
+            entry_off = len(self.data[0:16]) + 8 + i*8  # After TERF header + DIR1 header
+            # Actually, DIR1 starts after TERF header (16 bytes)
+            # Entry i is at: 16 + 8 + i*8
+            abs_entry_off = 16 + 8 + i*8
+            struct.pack_into('>I', new_data, abs_entry_off, f_off)
+            struct.pack_into('>I', new_data, abs_entry_off+4, f_len)
+        
+        # Update DATA length (total data section size including header)
+        data_len = len(new_data) - data_header_off
+        struct.pack_into('>I', new_data, data_header_off+4, data_len)
+        
+        print(f"Rebuilt TERF: {len(self.data)} -> {len(new_data)} bytes "
+              f"({len(new_data)-len(self.data):+d})")
+        return bytes(new_data)
+    
     def save(self, output_path):
         """Save modified archive."""
         Path(output_path).write_bytes(bytes(self.data))

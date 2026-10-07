@@ -325,17 +325,119 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     const imgData = ctx.getImageData(0, 0, 128, 128);
     URL.revokeObjectURL(url);
     
-    // Encode to CMPR (simplified - uses naive encoder)
-    // For now, we'll do a placeholder: this needs the full encoder
-    // TODO: Implement JS CMPR encoder
+    // Encode to CMPR
+    status.textContent = 'Encoding to CMPR...';
+    const cmprData = encodeCmpr(imgData, 128, 128);
     
-    status.textContent = 'PNG loaded. CMPR encoder coming soon - use desktop tool for now.';
-    status.textContent += ' (Texture must be 128x128, will be encoded to 8192 bytes)';
+    // Replace in DAT (must keep same size!)
+    // The texture file is 10908 bytes: 8192 base + mipmaps
+    // For now, replace only the base 8192 bytes, keep mipmaps
+    const entry = datEntries[currentTexIdx];
+    if (entry.length < 8192) {
+      throw new Error(`Texture too small: ${entry.length} bytes`);
+    }
+    
+    // Write CMPR data at entry offset
+    for (let i = 0; i < 8192 && i < cmprData.length; i++) {
+      datData[entry.offset + i] = cmprData[i];
+    }
+    
+    status.textContent = `Imported! Replaced 8192 bytes in texture ${currentTexIdx}. Download patched ISO to save.`;
+    
+    // Refresh preview
+    selectTexture(currentTexIdx);
     
   } catch (err) {
     status.textContent = 'Import failed: ' + err.message;
+    console.error(err);
   }
 });
+
+// === CMPR Encoder (JavaScript port from Python) ===
+function rgb888To565(r, g, b) {
+  return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+}
+
+function encodeCmpr(imgData, width, height) {
+  const pixels = imgData.data;
+  const output = new Uint8Array(Math.ceil(width/8) * Math.ceil(height/8) * 32);
+  let outOff = 0;
+  
+  const tileW = Math.ceil(width / 8);
+  const tileH = Math.ceil(height / 8);
+  
+  for (let ty = 0; ty < tileH; ty++) {
+    for (let tx = 0; tx < tileW; tx++) {
+      for (let by = 0; by < 2; by++) {
+        for (let bx = 0; bx < 2; bx++) {
+          // Get 4x4 block pixels
+          const blockPixels = [];
+          for (let y = 0; y < 4; y++) {
+            for (let x = 0; x < 4; x++) {
+              const gx = tx*8 + bx*4 + x;
+              const gy = ty*8 + by*4 + y;
+              if (gx < width && gy < height) {
+                const o = (gy * width + gx) * 4;
+                blockPixels.push([pixels[o], pixels[o+1], pixels[o+2]]);
+              } else {
+                blockPixels.push([0, 0, 0]);
+              }
+            }
+          }
+          
+          // Find min/max (naive)
+          let minR=255, minG=255, minB=255, maxR=0, maxG=0, maxB=0;
+          for (const [r,g,b] of blockPixels) {
+            minR = Math.min(minR, r); minG = Math.min(minG, g); minB = Math.min(minB, b);
+            maxR = Math.max(maxR, r); maxG = Math.max(maxG, g); maxB = Math.max(maxB, b);
+          }
+          
+          let c0 = rgb888To565(maxR, maxG, maxB);
+          let c1 = rgb888To565(minR, minG, minB);
+          if (c0 < c1) { const t = c0; c0 = c1; c1 = t; }
+          
+          // Decode colors for distance calc
+          const r0 = ((c0 >> 11) & 0x1F) * 255 / 31;
+          const g0 = ((c0 >> 5) & 0x3F) * 255 / 63;
+          const b0 = (c0 & 0x1F) * 255 / 31;
+          const r1 = ((c1 >> 11) & 0x1F) * 255 / 31;
+          const g1 = ((c1 >> 5) & 0x3F) * 255 / 63;
+          const b1 = (c1 & 0x1F) * 255 / 31;
+          const colors = [
+            [r0,g0,b0], [r1,g1,b1],
+            [(2*r0+r1)/3, (2*g0+g1)/3, (2*b0+b1)/3],
+            [(r0+2*r1)/3, (g0+2*g1)/3, (b0+2*b1)/3]
+          ];
+          
+          // Assign indices
+          let indices = 0;
+          for (let i = 0; i < 16; i++) {
+            const [r,g,b] = blockPixels[i];
+            let best = 0, bestDist = Infinity;
+            for (let ci = 0; ci < 4; ci++) {
+              const [cr,cg,cb] = colors[ci];
+              const dist = (r-cr)**2 + (g-cg)**2 + (b-cb)**2;
+              if (dist < bestDist) { bestDist = dist; best = ci; }
+            }
+            indices |= (best << (2*i));
+          }
+          
+          // Write DXT1 block (BE)
+          output[outOff++] = (c0 >> 8) & 0xFF;
+          output[outOff++] = c0 & 0xFF;
+          output[outOff++] = (c1 >> 8) & 0xFF;
+          output[outOff++] = c1 & 0xFF;
+          output[outOff++] = (indices >>> 24) & 0xFF;
+          output[outOff++] = (indices >>> 16) & 0xFF;
+          output[outOff++] = (indices >>> 8) & 0xFF;
+          output[outOff++] = indices & 0xFF;
+        }
+      }
+    }
+  }
+  
+  return output;
+}
 
 function downloadPatchedISO() {
   if (!isoFile || !datData || !datName) return;

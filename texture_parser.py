@@ -228,14 +228,14 @@ class TerfArchive:
         
         # Parse directory entries
         # Each: [offset:4 BE][length:4 BE] = 8 bytes
-        # Offset is relative to DATA content start
+        # Offset is ABSOLUTE (not relative)
+        # Note: First entries may point to DIR1/DATA headers themselves
         self.entries = []
         for i in range(self.num_files):
             off = self.dir1_offset + 8 + i*8
             f_offset = struct.unpack('>I', self.data[off:off+4])[0]
             f_length = struct.unpack('>I', self.data[off+4:off+8])[0]
-            abs_offset = self.data_content_offset + f_offset
-            self.entries.append((abs_offset, f_length))
+            self.entries.append((f_offset, f_length))
         
         print(f"  Parsed {len(self.entries)} directory entries")
     

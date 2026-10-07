@@ -3,168 +3,88 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>NCAA 2005 Player Editor</title>
+<title>NCAA 2005 Roster Editor</title>
 <link rel="manifest" href="manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <style>
   body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: white; }
-  h1 { text-align: center; font-size: 22px; }
+  h1 { text-align: center; font-size: 22px; margin-bottom: 5px; }
   .subtitle { text-align: center; color: #888; font-size: 13px; margin-bottom: 20px; }
+  .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #0f3460; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; box-sizing: border-box; text-align: center; }
+  .btn-green { background: #1a7a3a; }
+  .btn:active { opacity: 0.8; }
   #fileInput { display: none; }
-  .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #0f3460; color: white; border: none; border-radius: 8px; font-size: 16px; }
-  #teamList { list-style: none; padding: 0; }
-  #teamList li { padding: 12px; border-bottom: 1px solid #2a2a4a; font-size: 16px; }
-  .notice { background: #2a2a4a; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 13px; color: #aaa; }
+  .notice { background: #2a2a4a; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 13px; color: #aaa; line-height: 1.5; }
+  #playerList { list-style: none; padding: 0; max-height: 300px; overflow-y: auto; }
+  #playerList li { padding: 12px; border-bottom: 1px solid #2a2a4a; font-size: 15px; cursor: pointer; }
+  #playerList li.selected { background: #0f3460; }
+  #status { text-align: center; color: #888; margin: 10px; font-size: 14px; }
+  input[type="text"], input[type="number"], select {
+    width: 100%; padding: 10px; border-radius: 6px; border: none;
+    background: #1a1a2e; color: white; font-size: 16px; box-sizing: border-box;
+  }
+  .field-row { display: flex; align-items: center; margin-bottom: 10px; }
+  .field-row label { width: 90px; font-size: 14px; color: #aaa; }
+  .field-row input, .field-row select { flex: 1; }
+  #editorForm { display: none; background: #2a2a4a; padding: 15px; border-radius: 8px; margin-top: 10px; }
 </style>
 </head>
 <body>
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">Player Editor v1.1.0</div>
+<div class="subtitle">GCI Roster Editor v1.2.0</div>
 
 <div class="notice">
-  <strong>PLAY Table Format Cracked!</strong><br>
-  • 85 fields, 52-byte bit-packed records<br>
-  • 6-bit name encoding (PF01-PF10, PL01-PL13)<br>
-  • GameCube names transformed from PC<br>
-  <br>
-  Load your NCAA Football 2005 ISO or LEAGUE.DAT file.
+  <strong>Load a GCI save file</strong><br>
+  Export a roster save from Dolphin (or download from gc-saves.com),
+  edit player ratings, then load the modified GCI back in Dolphin.<br><br>
+  • PLAY table: 85 fields, 52-byte records<br>
+  • Supports rating edits and name changes
 </div>
 
-<label for="fileInput" class="btn" style="display: block; text-align: center; cursor: pointer;">Load ISO or LEAGUE.DAT</label>
-<input type="file" id="fileInput" accept=".iso,.nkit.iso,.dat" style="display: none;">
+<label for="fileInput" class="btn">Load GCI Save File</label>
+<input type="file" id="fileInput" accept=".gci" />
 
-<ul id="teamList"></ul>
-<div id="status" style="text-align: center; color: #888; margin: 10px;"></div>
+<div id="status"></div>
 
-<!-- Player Editor Section (v1.1.0) -->
-<div id="playerSection" style="display: none; margin-top: 20px;">
-  <h2 style="font-size: 18px; text-align: center;">Player Editor</h2>
-  <div class="notice">
-    Select a player to edit. Changes are held in memory.<br>
-    Use "Download Modified" to save.
-  </div>
-  <ul id="playerList" style="list-style: none; padding: 0; max-height: 200px; overflow-y: auto;"></ul>
+<div id="playerSection" style="display: none;">
+  <div class="notice" id="infoBox"></div>
+  <ul id="playerList"></ul>
   
-  <div id="editorForm" style="display: none; background: #2a2a4a; padding: 15px; border-radius: 8px; margin-top: 10px;">
-    <div style="margin-bottom: 10px;">
-      <label>PGID: <span id="editPgid">-</span></label>
+  <div id="editorForm">
+    <h3 style="margin-top: 0;">Edit Player</h3>
+    <div class="field-row">
+      <label>First:</label>
+      <input type="text" id="editFirst" maxlength="10">
     </div>
-    <div style="margin-bottom: 10px;">
-      <label>First Name:<br>
-      <input type="text" id="editFirst" style="width: 100%; padding: 8px; border-radius: 4px; border: none;"></label>
+    <div class="field-row">
+      <label>Last:</label>
+      <input type="text" id="editLast" maxlength="13">
     </div>
-    <div style="margin-bottom: 10px;">
-      <label>Last Name:<br>
-      <input type="text" id="editLast" style="width: 100%; padding: 8px; border-radius: 4px; border: none;"></label>
+    <div class="field-row">
+      <label>Position:</label>
+      <select id="editPos"></select>
     </div>
-    <div style="margin-bottom: 10px;">
-      <label>Position:<br>
-      <select id="editPos" style="width: 100%; padding: 8px; border-radius: 4px;">
-        <option>QB</option><option>HB</option><option>FB</option><option>WR</option><option>TE</option>
-        <option>LT</option><option>LG</option><option>C</option><option>RG</option><option>RT</option>
-        <option>LE</option><option>RE</option><option>DT</option>
-        <option>LOLB</option><option>MLB</option><option>ROLB</option>
-        <option>CB</option><option>FS</option><option>SS</option>
-        <option>K</option><option>P</option>
-      </select></label>
-    </div>
-    <button class="btn" onclick="applyPlayerChanges()">Apply Changes</button>
+    <div id="ratingFields"></div>
+    <button class="btn" onclick="applyChanges()">Apply Changes</button>
   </div>
   
-  <button class="btn" id="downloadBtn" style="display: none; background: #1a7a3a;" onclick="downloadModified()">Download Modified LEAGUE.DAT</button>
+  <button class="btn btn-green" id="downloadBtn" onclick="downloadGCI()">Download Modified GCI</button>
 </div>
 
 <script>
-// LEAGUE.DAT location in ISO (from research)
-const LEAGUE_DAT_ISO_OFF = 0x4E352D78;
-const LEAGUE_DAT_SIZE = 2176504;
+// === Constants ===
+const GCI_DB_OFFSET = 0x880;
+const GCI_DB_SIZE = 0x730E0;
+const PLAY_SCHEMA_OFFSET = 0xA198;
+const PLAY_RECORDS_OFFSET = 0xA708;
+const PLAY_RECORD_SIZE = 52;
 
-document.getElementById('fileInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  
-  const status = document.getElementById('status');
-  const fileName = file.name.toLowerCase();
-  
-  try {
-    let data;
-    
-    if (fileName.endsWith('.iso') || fileName.endsWith('.nkit.iso')) {
-      // Extract LEAGUE.DAT from ISO
-      status.textContent = 'Reading ISO (2GB+, this may take a moment)...';
-      
-      // Use slice to read only the LEAGUE.DAT portion (more memory efficient)
-      const blob = file.slice(LEAGUE_DAT_ISO_OFF, LEAGUE_DAT_ISO_OFF + LEAGUE_DAT_SIZE);
-      const buffer = await blob.arrayBuffer();
-      data = new Uint8Array(buffer);
-      
-      // Verify it looks like LEAGUE.DAT (should contain team names)
-      status.textContent = 'Parsing teams...';
-    } else {
-      // Direct LEAGUE.DAT file
-      status.textContent = 'Loading LEAGUE.DAT...';
-      const buffer = await file.arrayBuffer();
-      data = new Uint8Array(buffer);
-    }
-    
-    // Find team names: pattern \x04\xff<Name>!
-    const teams = [];
-    const decoder = new TextDecoder('ascii');
-    
-    for (let i = 0; i < data.length - 20; i++) {
-      if (data[i] === 0x04 && data[i+1] === 0xFF) {
-        let end = i + 2;
-        while (end < data.length && data[end] !== 0x21 && end - i < 30) end++;
-        if (data[end] === 0x21) {
-          const nameBytes = data.slice(i+2, end);
-          let valid = true;
-          for (let b of nameBytes) {
-            if (b < 32 || b > 126) { valid = false; break; }
-          }
-          if (valid && nameBytes.length > 2) {
-            const name = decoder.decode(nameBytes);
-            if (!teams.includes(name)) teams.push(name);
-          }
-        }
-      }
-    }
-    
-    teams.sort();
-    const list = document.getElementById('teamList');
-    list.innerHTML = '';
-    teams.forEach(team => {
-      const li = document.createElement('li');
-      li.textContent = team;
-      list.appendChild(li);
-    });
-    
-    status.textContent = `Found ${teams.length} teams`;
-    
-    // Show player editor section (v1.1.0)
-    // PLAY table format: 85 fields, 52-byte records
-    // Note: Full player parsing requires record alignment verification
-    document.getElementById('playerSection').style.display = 'block';
-    document.getElementById('status').textContent += ' | Player editor ready';
-    
-    // Store data for player editing
-    window.leagueData = data;
-    
-  } catch (err) {
-    status.textContent = 'Error: ' + err.message;
-    console.error(err);
-  }
-});
-
-// Player Editor (v1.1.0) - PLAY table format
-// Field offsets from reverse engineering:
-// PF01-PF10, PL01-PL13 at bits 46-178 (6 bits each)
-// PGID at bit 210 (16 bits)
-
+// 6-bit alphabet
 function decodeChar(v) {
   if (v === 0) return '';
-  if (v >= 1 && v <= 26) return String.fromCharCode(96 + v); // a-z
-  if (v >= 27 && v <= 52) return String.fromCharCode(38 + v); // A-Z (27->65)
+  if (v >= 1 && v <= 26) return String.fromCharCode(96 + v);
+  if (v >= 27 && v <= 52) return String.fromCharCode(38 + v);
   if (v === 53) return '-';
   if (v === 54) return "'";
   if (v === 55) return '.';
@@ -172,6 +92,17 @@ function decodeChar(v) {
   return '?';
 }
 
+function encodeChar(c) {
+  if (c >= 'a' && c <= 'z') return c.charCodeAt(0) - 96;
+  if (c >= 'A' && c <= 'Z') return c.charCodeAt(0) - 38;
+  if (c === '-') return 53;
+  if (c === "'") return 54;
+  if (c === '.') return 55;
+  if (c === ' ') return 56;
+  return 56; // default to space
+}
+
+// Bit operations (MSB-first)
 function getBits(data, byteOff, bitOff, n) {
   let v = 0;
   for (let i = 0; i < n; i++) {
@@ -183,26 +114,310 @@ function getBits(data, byteOff, bitOff, n) {
   return v;
 }
 
-let currentPlayerIdx = -1;
-
-function applyPlayerChanges() {
-  const first = document.getElementById('editFirst').value;
-  const last = document.getElementById('editLast').value;
-  const pos = document.getElementById('editPos').value;
-  
-  if (currentPlayerIdx >= 0) {
-    const list = document.getElementById('playerList');
-    const item = list.children[currentPlayerIdx];
-    if (item) {
-      item.textContent = `${first} ${last} (${pos})`;
-    }
+function setBits(data, byteOff, bitOff, n, val) {
+  for (let i = 0; i < n; i++) {
+    const absBit = bitOff + i;
+    const idx = byteOff + Math.floor(absBit / 8);
+    const bitPos = 7 - (absBit % 8);
+    const bitVal = (val >> (n - 1 - i)) & 1;
+    if (bitVal) data[idx] |= (1 << bitPos);
+    else data[idx] &= ~(1 << bitPos);
   }
-  
-  alert('Changes applied (in-memory). Use Download to save.');
 }
 
-function downloadModified() {
-  alert('Save functionality in development. Record serialization coming soon.');
+// GameCube name -> PC name (reverse)
+function gcToPc(gc) { return gc.split('').reverse().join(''); }
+
+// === Global state ===
+let gciData = null;      // Full GCI file
+let dbData = null;       // Extracted DB (0x730E0 bytes)
+let fields = {};         // {pcName: {size, bit}}
+let playerCount = 0;
+let currentPlayer = -1;
+
+// Rating fields to display/edit
+const RATING_FIELDS = [
+  ['PTHA', 'Throw Acc'], ['PACC', 'Accuracy'], ['PSPD', 'Speed'],
+  ['PAGI', 'Agility'], ['PAWR', 'Awareness'], ['POVR', 'Overall'],
+  ['PKAC', 'Kick Acc'], ['PKPW', 'Kick Pow'], ['PTAK', 'Tackle'],
+];
+
+const POSITIONS = ['QB','HB','FB','WR','TE','LT','LG','C','RG','RT',
+  'LE','RE','DT','LOLB','MLB','ROLB','CB','FS','SS','K','P'];
+
+// === Schema parsing ===
+function parseSchema() {
+  fields = {};
+  let off = PLAY_SCHEMA_OFFSET;
+  
+  while (off + 16 <= dbData.length) {
+    // Check for separator
+    if (dbData[off] === 0x21 && dbData[off+1] === 0x00 && dbData[off+2] === 0x04) {
+      off += 3;
+      continue;
+    }
+    
+    const nameBytes = dbData.slice(off, off+4);
+    const name = String.fromCharCode(...nameBytes);
+    if (!/^[A-Za-z0-9_]{4}$/.test(name)) break;
+    
+    const size = (dbData[off+4]<<24)|(dbData[off+5]<<16)|(dbData[off+6]<<8)|dbData[off+7];
+    const ftype = (dbData[off+8]<<24)|(dbData[off+9]<<16)|(dbData[off+10]<<8)|dbData[off+11];
+    if (size > 5000 || ftype > 20) break;
+    
+    // Check inline separator
+    if (dbData[off+12] === 0x21 && dbData[off+13] === 0x00 && dbData[off+14] === 0x04) {
+      off += 15;
+      continue;
+    }
+    
+    const bit = (dbData[off+12]<<24)|(dbData[off+13]<<16)|(dbData[off+14]<<8)|dbData[off+15];
+    if (bit > 10000) break;
+    
+    const pc = gcToPc(name);
+    fields[pc] = {size, bit};
+    off += 16;
+    
+    if (Object.keys(fields).length > 200) break;
+  }
+  
+  return Object.keys(fields).length;
+}
+
+// === Player access ===
+function getPlayerRecord(idx) {
+  const off = PLAY_RECORDS_OFFSET + idx * PLAY_RECORD_SIZE;
+  return off; // offset into dbData
+}
+
+function getField(idx, fname) {
+  const f = fields[fname];
+  if (!f) return 0;
+  const recOff = getPlayerRecord(idx);
+  return getBits(dbData, recOff, f.bit, f.size);
+}
+
+function setField(idx, fname, val) {
+  const f = fields[fname];
+  if (!f) return;
+  const recOff = getPlayerRecord(idx);
+  setBits(dbData, recOff, f.bit, f.size, val);
+}
+
+function getPlayerName(idx) {
+  let first = '', last = '';
+  for (let i = 1; i <= 10; i++) {
+    const fname = 'PF' + String(i).padStart(2, '0');
+    const f = fields[fname];
+    if (!f) continue;
+    const v = getBits(dbData, getPlayerRecord(idx), f.bit, f.size);
+    if (v === 0) break;
+    first += decodeChar(v);
+  }
+  for (let i = 1; i <= 13; i++) {
+    const fname = 'PL' + String(i).padStart(2, '0');
+    const f = fields[fname];
+    if (!f) continue;
+    const v = getBits(dbData, getPlayerRecord(idx), f.bit, f.size);
+    if (v === 0) break;
+    last += decodeChar(v);
+  }
+  return [first, last];
+}
+
+function setPlayerName(idx, first, last) {
+  const recOff = getPlayerRecord(idx);
+  // First name: PF01-PF10
+  for (let i = 1; i <= 10; i++) {
+    const fname = 'PF' + String(i).padStart(2, '0');
+    const f = fields[fname];
+    if (!f) continue;
+    const c = i <= first.length ? first[i-1] : '';
+    const v = c ? encodeChar(c) : 0;
+    setBits(dbData, recOff, f.bit, f.size, v);
+  }
+  // Last name: PL01-PL13
+  for (let i = 1; i <= 13; i++) {
+    const fname = 'PL' + String(i).padStart(2, '0');
+    const f = fields[fname];
+    if (!f) continue;
+    const c = i <= last.length ? last[i-1] : '';
+    const v = c ? encodeChar(c) : 0;
+    setBits(dbData, recOff, f.bit, f.size, v);
+  }
+}
+
+// === UI ===
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  const status = document.getElementById('status');
+  status.textContent = 'Loading GCI...';
+  
+  try {
+    const buffer = await file.arrayBuffer();
+    gciData = new Uint8Array(buffer);
+    
+    // Find DB marker
+    let dbOff = -1;
+    for (let i = 0; i < gciData.length - 2; i++) {
+      if (gciData[i] === 0x44 && gciData[i+1] === 0x42) { // 'DB'
+        dbOff = i;
+        break;
+      }
+    }
+    if (dbOff < 0) throw new Error('No DB found in GCI');
+    
+    // Extract DB
+    dbData = gciData.slice(dbOff, dbOff + GCI_DB_SIZE);
+    
+    // Parse schema
+    const fieldCount = parseSchema();
+    if (fieldCount === 0) throw new Error('Failed to parse PLAY schema');
+    
+    // Estimate player count (scan for non-empty records, cap at 2000)
+    playerCount = 0;
+    for (let i = 0; i < 2000; i++) {
+      const off = PLAY_RECORDS_OFFSET + i * PLAY_RECORD_SIZE;
+      if (off + PLAY_RECORD_SIZE > dbData.length) break;
+      playerCount++;
+    }
+    
+    status.textContent = `Loaded: ${fieldCount} fields, ${playerCount} players`;
+    document.getElementById('infoBox').innerHTML = 
+      `<strong>GCI loaded:</strong> ${file.name}<br>` +
+      `PLAY table: ${fieldCount} fields, ${playerCount} records<br>` +
+      `Tap a player to edit.`;
+    
+    // Populate player list
+    const list = document.getElementById('playerList');
+    list.innerHTML = '';
+    const showCount = Math.min(playerCount, 100);
+    for (let i = 0; i < showCount; i++) {
+      const [first, last] = getPlayerName(i);
+      const name = (first + ' ' + last).trim() || `Player ${i}`;
+      const ppos = getField(i, 'PPOS');
+      const posName = POSITIONS[ppos] || `P${ppos}`;
+      const ovr = getField(i, 'POVR');
+      
+      const li = document.createElement('li');
+      li.textContent = `${name} (${posName}) OVR:${ovr}`;
+      li.onclick = () => selectPlayer(i);
+      list.appendChild(li);
+    }
+    if (playerCount > 100) {
+      const li = document.createElement('li');
+      li.textContent = `... and ${playerCount - 100} more (showing first 100)`;
+      li.style.color = '#888';
+      list.appendChild(li);
+    }
+    
+    document.getElementById('playerSection').style.display = 'block';
+    
+    // Setup position dropdown
+    const posSel = document.getElementById('editPos');
+    posSel.innerHTML = '';
+    POSITIONS.forEach((p, idx) => {
+      const opt = document.createElement('option');
+      opt.value = idx;
+      opt.textContent = p;
+      posSel.appendChild(opt);
+    });
+    
+    // Setup rating fields
+    const rfDiv = document.getElementById('ratingFields');
+    rfDiv.innerHTML = '';
+    RATING_FIELDS.forEach(([fname, label]) => {
+      if (!fields[fname]) return;
+      const div = document.createElement('div');
+      div.className = 'field-row';
+      div.innerHTML = `<label>${label}:</label><input type="number" id="edit_${fname}" min="0" max="31">`;
+      rfDiv.appendChild(div);
+    });
+    
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+});
+
+function selectPlayer(idx) {
+  currentPlayer = idx;
+  
+  // Highlight
+  const items = document.getElementById('playerList').children;
+  for (let i = 0; i < items.length; i++) {
+    items[i].classList.toggle('selected', i === idx);
+  }
+  
+  // Load into form
+  const [first, last] = getPlayerName(idx);
+  document.getElementById('editFirst').value = first;
+  document.getElementById('editLast').value = last;
+  document.getElementById('editPos').value = getField(idx, 'PPOS');
+  
+  RATING_FIELDS.forEach(([fname]) => {
+    const el = document.getElementById('edit_' + fname);
+    if (el) el.value = getField(idx, fname);
+  });
+  
+  document.getElementById('editorForm').style.display = 'block';
+}
+
+function applyChanges() {
+  if (currentPlayer < 0) return;
+  
+  const first = document.getElementById('editFirst').value;
+  const last = document.getElementById('editLast').value;
+  setPlayerName(currentPlayer, first, last);
+  
+  const pos = parseInt(document.getElementById('editPos').value);
+  setField(currentPlayer, 'PPOS', pos);
+  
+  RATING_FIELDS.forEach(([fname]) => {
+    const el = document.getElementById('edit_' + fname);
+    if (el && el.value !== '') {
+      setField(currentPlayer, fname, parseInt(el.value));
+    }
+  });
+  
+  // Refresh list item
+  const [nf, nl] = getPlayerName(currentPlayer);
+  const name = (nf + ' ' + nl).trim() || `Player ${currentPlayer}`;
+  const posName = POSITIONS[pos] || `P${pos}`;
+  const ovr = getField(currentPlayer, 'POVR');
+  const li = document.getElementById('playerList').children[currentPlayer];
+  if (li) li.textContent = `${name} (${posName}) OVR:${ovr}`;
+  
+  document.getElementById('status').textContent = 'Changes applied (in memory). Download to save.';
+}
+
+function downloadGCI() {
+  if (!gciData || !dbData) return;
+  
+  // Write DB back into GCI
+  let dbOff = -1;
+  for (let i = 0; i < gciData.length - 2; i++) {
+    if (gciData[i] === 0x44 && gciData[i+1] === 0x42) {
+      dbOff = i;
+      break;
+    }
+  }
+  if (dbOff >= 0) {
+    gciData.set(dbData, dbOff);
+  }
+  
+  // Download
+  const blob = new Blob([gciData], {type: 'application/octet-stream'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ncaa05_modified.gci';
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  document.getElementById('status').textContent = 'GCI downloaded! Load it in Dolphin.';
 }
 </script>
 </body>

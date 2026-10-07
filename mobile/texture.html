@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>NCAA 2005 Texture Editor</title>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: white; }
+  h1 { text-align: center; font-size: 22px; margin-bottom: 5px; }
+  .subtitle { text-align: center; color: #888; font-size: 13px; margin-bottom: 20px; }
+  .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #0f3460; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; box-sizing: border-box; text-align: center; }
+  .btn-green { background: #1a7a3a; }
+  .btn-orange { background: #b36a00; }
+  .btn:active { opacity: 0.8; }
+  #fileInput, #importInput { display: none; }
+  .notice { background: #2a2a4a; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 13px; color: #aaa; line-height: 1.5; }
+  #textureList { list-style: none; padding: 0; max-height: 250px; overflow-y: auto; }
+  #textureList li { padding: 10px; border-bottom: 1px solid #2a2a4a; font-size: 14px; cursor: pointer; }
+  #textureList li.selected { background: #0f3460; }
+  #status { text-align: center; color: #888; margin: 10px; font-size: 14px; }
+  select { width: 100%; padding: 12px; border-radius: 6px; border: none; background: #2a2a4a; color: white; font-size: 16px; margin: 10px 0; }
+  #previewCanvas { display: block; margin: 15px auto; border: 2px solid #0f3460; border-radius: 8px; max-width: 100%; image-rendering: pixelated; }
+  .nav { text-align: center; margin-bottom: 15px; }
+  .nav a { color: #4a9eff; text-decoration: none; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="index.html">← Back to Roster Editor</a></div>
+
+<h1>NCAA Football 2005</h1>
+<div class="subtitle">Texture Editor v1.0</div>
+
+<div class="notice">
+  <strong>Export & Import Game Textures</strong><br>
+  Load ISO → select texture archive → preview → export PNG →<br>
+  import replacement → download patched ISO.<br><br>
+  • PLYRFACE.DAT: Player faces (128×128 CMPR)<br>
+  • COACFACE.DAT: Coach faces<br>
+  • STADATA.DAT: Stadium textures<br>
+  • UIS_*.DAT: UI textures
+</div>
+
+<label for="fileInput" class="btn">Load ISO File</label>
+<input type="file" id="fileInput" accept=".iso" />
+
+<div id="datSection" style="display: none;">
+  <label style="font-size: 14px; color: #aaa;">Texture Archive:</label>
+  <select id="datSelect" onchange="loadDat()">
+    <option value="">-- Select --</option>
+    <option value="PLYRFACE">PLYRFACE.DAT - Player Faces (1MB)</option>
+    <option value="COACFACE">COACFACE.DAT - Coach Faces (446KB)</option>
+    <option value="ICONS">ICONS.DAT - Icons (44KB)</option>
+    <option value="UIS_ALL">UIS_ALL.DAT - UI Textures (6MB)</option>
+    <option value="UIS_IG">UIS_IG.DAT - In-Game UI (157KB)</option>
+  </select>
+</div>
+
+<div id="status"></div>
+
+<div id="textureSection" style="display: none;">
+  <ul id="textureList"></ul>
+  <canvas id="previewCanvas" width="128" height="128"></canvas>
+  <div id="texInfo" class="notice" style="display: none;"></div>
+  <button class="btn btn-green" onclick="exportPNG()">Export as PNG</button>
+  <label for="importInput" class="btn btn-orange">Import Replacement PNG</label>
+  <input type="file" id="importInput" accept=".png" />
+  <button class="btn btn-green" onclick="downloadPatchedISO()">Download Patched ISO</button>
+</div>
+
+<script>
+// === Texture Archive Offsets (from ISO FST) ===
+const DAT_INFO = {
+  'PLYRFACE': {offset: 0x121B0000, size: 1087488},
+  'COACFACE': {offset: 0x1C60000, size: 456704},
+  'ICONS':    {offset: 0x1F30000, size: 45056},
+  'UIS_ALL':  {offset: 0x4D5E8000, size: 6098240},
+  'UIS_IG':   {offset: 0x4E5E8000, size: 161280},
+};
+
+let isoFile = null;
+let datData = null;
+let datName = null;
+let datEntries = [];  // [{offset, length}]
+let currentTexIdx = -1;
+
+// === TERF/DIR1 Parser ===
+function parseTerf(data) {
+  if (data[0] !== 0x54 || data[1] !== 0x45 || data[2] !== 0x52 || data[3] !== 0x46) {
+    throw new Error('Not a TERF archive');
+  }
+  const numFiles = (data[14] << 8) | data[15];
+  
+  // Find DIR1
+  let dir1Off = -1;
+  for (let i = 0; i < data.length - 4; i++) {
+    if (data[i] === 0x44 && data[i+1] === 0x49 && data[i+2] === 0x52 && data[i+3] === 0x31) {
+      dir1Off = i;
+      break;
+    }
+  }
+  if (dir1Off < 0) throw new Error('No DIR1 found');
+  
+  const entries = [];
+  for (let i = 0; i < numFiles; i++) {
+    const off = dir1Off + 8 + i * 8;
+    const fOff = (data[off] << 24) | (data[off+1] << 16) | (data[off+2] << 8) | data[off+3];
+    const fLen = (data[off+4] << 24) | (data[off+5] << 16) | (data[off+6] << 8) | data[off+7];
+    entries.push({offset: fOff, length: fLen});
+  }
+  return entries;
+}
+
+// === CMPR Decoder (GameCube DXT1) ===
+function rgb565ToRgb(r, g, b) {
+  // Actually takes 565 value, returns [r,g,b]
+  return [
+    ((arguments[0] >> 11) & 0x1F) * 255 / 31,
+    ((arguments[0] >> 5) & 0x3F) * 255 / 63,
+    (arguments[0] & 0x1F) * 255 / 31
+  ];
+}
+
+function decodeDxt1Block(data, off, x0, y0, imgData, width) {
+  const c0 = (data[off] << 8) | data[off+1];
+  const c1 = (data[off+2] << 8) | data[off+3];
+  const indices = (data[off+4] << 24) | (data[off+5] << 16) | (data[off+6] << 8) | data[off+7];
+  
+  const r0 = ((c0 >> 11) & 0x1F) * 255 / 31;
+  const g0 = ((c0 >> 5) & 0x3F) * 255 / 63;
+  const b0 = (c0 & 0x1F) * 255 / 31;
+  const r1 = ((c1 >> 11) & 0x1F) * 255 / 31;
+  const g1 = ((c1 >> 5) & 0x3F) * 255 / 63;
+  const b1 = (c1 & 0x1F) * 255 / 31;
+  
+  let colors;
+  if (c0 > c1) {
+    colors = [
+      [r0, g0, b0], [r1, g1, b1],
+      [(2*r0+r1)/3, (2*g0+g1)/3, (2*b0+b1)/3],
+      [(r0+2*r1)/3, (g0+2*g1)/3, (b0+2*b1)/3]
+    ];
+  } else {
+    colors = [
+      [r0, g0, b0], [r1, g1, b1],
+      [(r0+r1)/2, (g0+g1)/2, (b0+b1)/2],
+      [0, 0, 0]
+    ];
+  }
+  
+  for (let y = 0; y < 4; y++) {
+    for (let x = 0; x < 4; x++) {
+      const idx = (indices >>> (2 * (y*4 + x))) & 0x03;
+      const px = x0 + x, py = y0 + y;
+      if (px < width) {
+        const o = (py * width + px) * 4;
+        imgData[o] = colors[idx][0];
+        imgData[o+1] = colors[idx][1];
+        imgData[o+2] = colors[idx][2];
+        imgData[o+3] = 255;
+      }
+    }
+  }
+}
+
+function decodeCmpr(data, width, height) {
+  // Returns ImageData
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.createImageData(width, height);
+  
+  const tileW = Math.ceil(width / 8);
+  const tileH = Math.ceil(height / 8);
+  let offset = 0;
+  
+  for (let ty = 0; ty < tileH; ty++) {
+    for (let tx = 0; tx < tileW; tx++) {
+      for (let by = 0; by < 2; by++) {
+        for (let bx = 0; bx < 2; bx++) {
+          if (offset + 8 > data.length) break;
+          const x0 = tx*8 + bx*4;
+          const y0 = ty*8 + by*4;
+          decodeDxt1Block(data, offset, x0, y0, imgData.data, width);
+          offset += 8;
+        }
+      }
+    }
+  }
+  
+  return imgData;
+}
+
+// === UI ===
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  isoFile = file;
+  document.getElementById('datSection').style.display = 'block';
+  document.getElementById('status').textContent = `ISO loaded: ${file.name} (${(file.size/1024/1024).toFixed(0)}MB)`;
+});
+
+async function loadDat() {
+  const sel = document.getElementById('datSelect');
+  datName = sel.value;
+  if (!datName || !isoFile) return;
+  
+  const info = DAT_INFO[datName];
+  const status = document.getElementById('status');
+  status.textContent = `Extracting ${datName}.DAT...`;
+  
+  try {
+    const blob = isoFile.slice(info.offset, info.offset + info.size);
+    const buffer = await blob.arrayBuffer();
+    datData = new Uint8Array(buffer);
+    
+    datEntries = parseTerf(datData);
+    status.textContent = `${datName}.DAT: ${datEntries.length} files`;
+    
+    // List texture files (skip first 2 which are DIR1/DATA headers, and tiny metadata)
+    const list = document.getElementById('textureList');
+    list.innerHTML = '';
+    let texCount = 0;
+    datEntries.forEach((entry, idx) => {
+      if (idx < 2) return; // Skip headers
+      if (entry.length < 1000) return; // Skip tiny metadata
+      const li = document.createElement('li');
+      li.textContent = `Texture ${idx} (${entry.length} bytes)`;
+      li.onclick = () => selectTexture(idx);
+      list.appendChild(li);
+      texCount++;
+    });
+    
+    document.getElementById('textureSection').style.display = 'block';
+    status.textContent += ` | ${texCount} textures`;
+    
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+  }
+}
+
+function selectTexture(idx) {
+  currentTexIdx = idx;
+  const items = document.getElementById('textureList').children;
+  for (let i = 0; i < items.length; i++) {
+    items[i].classList.toggle('selected', items[i].textContent.startsWith(`Texture ${idx} `));
+  }
+  
+  const entry = datEntries[idx];
+  const texData = datData.slice(entry.offset, entry.offset + entry.length);
+  
+  // Try to decode as 128x128 CMPR (for PLYRFACE)
+  // For other DATs, we may need different dimensions
+  const info = document.getElementById('texInfo');
+  info.style.display = 'block';
+  info.innerHTML = `File ${idx}: ${entry.length} bytes at 0x${entry.offset.toString(16)}`;
+  
+  const canvas = document.getElementById('previewCanvas');
+  const ctx = canvas.getContext('2d');
+  
+  try {
+    // Guess dimensions based on size
+    let width = 128, height = 128, dataOff = 0;
+    if (entry.length === 10908) {
+      // 128x128 CMPR with mipmaps, 8192 bytes base
+      width = 128; height = 128;
+      dataOff = 0;
+    } else if (entry.length === 2140) {
+      // Unknown, try 64x64?
+      width = 64; height = 64;
+      // 64x64 CMPR = 2048 bytes, close to 2140
+      dataOff = 0;
+    } else {
+      info.innerHTML += `<br>Unknown format for ${entry.length} bytes`;
+      return;
+    }
+    
+    canvas.width = width;
+    canvas.height = height;
+    const imgData = decodeCmpr(texData.slice(dataOff, dataOff + width*height/2), width, height);
+    ctx.putImageData(imgData, 0, 0);
+    info.innerHTML += `<br>Decoded as ${width}×${height} CMPR`;
+    
+  } catch (err) {
+    info.innerHTML += `<br>Decode failed: ${err.message}`;
+  }
+}
+
+function exportPNG() {
+  if (currentTexIdx < 0) return;
+  const canvas = document.getElementById('previewCanvas');
+  const url = canvas.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${datName}_tex${currentTexIdx}.png`;
+  a.click();
+  document.getElementById('status').textContent = 'PNG exported!';
+}
+
+document.getElementById('importInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || currentTexIdx < 0) return;
+  
+  const status = document.getElementById('status');
+  status.textContent = 'Importing PNG... (encoding to CMPR)';
+  
+  try {
+    // Load PNG into canvas
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+      img.src = url;
+    });
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, 128, 128);
+    const imgData = ctx.getImageData(0, 0, 128, 128);
+    URL.revokeObjectURL(url);
+    
+    // Encode to CMPR (simplified - uses naive encoder)
+    // For now, we'll do a placeholder: this needs the full encoder
+    // TODO: Implement JS CMPR encoder
+    
+    status.textContent = 'PNG loaded. CMPR encoder coming soon - use desktop tool for now.';
+    status.textContent += ' (Texture must be 128x128, will be encoded to 8192 bytes)';
+    
+  } catch (err) {
+    status.textContent = 'Import failed: ' + err.message;
+  }
+});
+
+function downloadPatchedISO() {
+  if (!isoFile || !datData || !datName) return;
+  
+  const info = DAT_INFO[datName];
+  const status = document.getElementById('status');
+  status.textContent = 'Rebuilding ISO...';
+  
+  const part1 = isoFile.slice(0, info.offset);
+  const part2 = new Blob([datData]);
+  const part3 = isoFile.slice(info.offset + info.size);
+  
+  const newIso = new Blob([part1, part2, part3], {type: 'application/octet-stream'});
+  const url = URL.createObjectURL(newIso);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ncaa05_patched.iso';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  
+  status.textContent = 'Patched ISO downloaded!';
+}
+</script>
+</body>
+</html>

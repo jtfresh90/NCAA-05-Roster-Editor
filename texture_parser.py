@@ -22,11 +22,15 @@ rebuild ISO via Blob concatenation (same as roster editor).
 from pathlib import Path
 import struct
 
-# Texture archive locations in ISO
+# Texture archive locations in ISO (from FST)
 TEXTURE_ARCHIVES = {
-    'PLYRFACE.DAT': {'offset': 0x121964FC, 'size': 1087488, 'desc': 'Player faces'},
-    'STADATA.DAT': {'offset': None, 'size': 16762176, 'desc': 'Stadium textures'},
-    'STADIUMS.DAT': {'offset': None, 'size': 287321536, 'desc': 'Stadium models/textures'},
+    'PLYRFACE.DAT': {'offset': 0x121B0000, 'size': 1087488, 'desc': 'Player faces (144 files)'},
+    'COACFACE.DAT': {'offset': 0x1C60000, 'size': 456704, 'desc': 'Coach faces'},
+    'STADATA.DAT': {'offset': 0x3A1B8000, 'size': 16762176, 'desc': 'Stadium textures'},
+    'STADIUMS.DAT': {'offset': 0x3B1B8000, 'size': 287321536, 'desc': 'Stadium models/textures'},
+    'ICONS.DAT': {'offset': 0x1F30000, 'size': 45056, 'desc': 'Icons'},
+    'UIS_ALL.DAT': {'offset': 0x4D5E8000, 'size': 6098240, 'desc': 'UI textures'},
+    'UIS_IG.DAT': {'offset': 0x4E5E8000, 'size': 161280, 'desc': 'In-game UI'},
 }
 
 

@@ -118,6 +118,150 @@ function parseTerf(data) {
   return entries;
 }
 
+// === TERF Rebuild (for HD textures with larger file sizes) ===
+function rebuildTerf(originalData, replacements, filePad) {
+  // originalData: Uint8Array of the TERF archive
+  // replacements: Map {index: Uint8Array newData}
+  // filePad: alignment (e.g., 0x800)
+  // Returns: Uint8Array of rebuilt TERF (may be larger)
+  
+  // Parse header
+  const numFiles = (originalData[14] << 8) | originalData[15];
+  const dir1Len = (originalData[0x804] << 24) | (originalData[0x805] << 16) | 
+                  (originalData[0x806] << 8) | originalData[0x807];
+  
+  // Get all file data (original or replaced)
+  const filesData = [];
+  const entries = parseTerf(originalData);
+  for (let i = 0; i < entries.length; i++) {
+    if (replacements.has(i)) {
+      filesData.push(replacements.get(i));
+    } else {
+      filesData.push(originalData.slice(entries[i].offset, entries[i].offset + entries[i].length));
+    }
+  }
+  
+  // Build new TERF
+  // Start with TERF header (16 bytes)
+  const header = originalData.slice(0, 16);
+  
+  // DIR1: 'DIR1' (4) + dir_len (4) + entries (numFiles*8) + padding to dir1Len
+  const dir1Size = 8 + numFiles * 8;
+  const dir1 = new Uint8Array(dir1Len);
+  dir1[0] = 0x44; dir1[1] = 0x49; dir1[2] = 0x52; dir1[3] = 0x31; // 'DIR1'
+  dir1[4] = (dir1Len >>> 24) & 0xFF;
+  dir1[5] = (dir1Len >>> 16) & 0xFF;
+  dir1[6] = (dir1Len >>> 8) & 0xFF;
+  dir1[7] = dir1Len & 0xFF;
+  // Entries will be filled after we know offsets
+  
+  // Calculate offsets
+  // Layout: [TERF header 16][DIR1 dir1Len][DATA header 8][files...]
+  let currentOffset = 16 + dir1Len + 8; // After TERF header + DIR1 + DATA header
+  const newEntries = [];
+  
+  for (let i = 0; i < filesData.length; i++) {
+    // Align to filePad
+    const pad = (filePad - (currentOffset % filePad)) % filePad;
+    currentOffset += pad;
+    newEntries.push({offset: currentOffset, length: filesData[i].length});
+    currentOffset += filesData[i].length;
+  }
+  
+  // Build the full output
+  // We need to calculate total size first
+  let totalSize = currentOffset;
+  const output = new Uint8Array(totalSize);
+  
+  // Copy TERF header
+  output.set(header, 0);
+  
+  // Write DIR1 with updated entries
+  output.set(dir1.slice(0, 8), 16); // DIR1 header
+  for (let i = 0; i < newEntries.length; i++) {
+    const entryOff = 16 + 8 + i * 8;
+    const fOff = newEntries[i].offset;
+    const fLen = newEntries[i].length;
+    output[entryOff] = (fOff >>> 24) & 0xFF;
+    output[entryOff+1] = (fOff >>> 16) & 0xFF;
+    output[entryOff+2] = (fOff >>> 8) & 0xFF;
+    output[entryOff+3] = fOff & 0xFF;
+    output[entryOff+4] = (fLen >>> 24) & 0xFF;
+    output[entryOff+5] = (fLen >>> 16) & 0xFF;
+    output[entryOff+6] = (fLen >>> 8) & 0xFF;
+    output[entryOff+7] = fLen & 0xFF;
+  }
+  // DIR1 padding already zeros
+  
+  // DATA header
+  const dataHeaderOff = 16 + dir1Len;
+  output[dataHeaderOff] = 0x44; output[dataHeaderOff+1] = 0x41;
+  output[dataHeaderOff+2] = 0x54; output[dataHeaderOff+3] = 0x41; // 'DATA'
+  const dataLen = totalSize - dataHeaderOff;
+  output[dataHeaderOff+4] = (dataLen >>> 24) & 0xFF;
+  output[dataHeaderOff+5] = (dataLen >>> 16) & 0xFF;
+  output[dataHeaderOff+6] = (dataLen >>> 8) & 0xFF;
+  output[dataHeaderOff+7] = dataLen & 0xFF;
+  
+  // Write file data
+  for (let i = 0; i < filesData.length; i++) {
+    const {offset, length} = newEntries[i];
+    output.set(filesData[i], offset);
+  }
+  
+  return output;
+}
+
+// === FST Update (for larger DAT in ISO) ===
+function updateFstForDat(isoData, fstOffset, datName, newDatOffset, newDatSize) {
+  // isoData: Uint8Array of ISO (we'll modify the FST portion)
+  // Returns: Uint8Array of modified FST (0x415 bytes)
+  // 
+  // FST format: each entry 12 bytes
+  // Byte 0: type (0=file) + name offset (3 bytes BE)
+  // Bytes 4-7: file offset (BE)
+  // Bytes 8-11: file size (BE)
+  
+  const FST_SIZE = 0x415;
+  const fst = isoData.slice(fstOffset, fstOffset + FST_SIZE);
+  
+  const numEntries = (fst[8] << 24) | (fst[9] << 16) | (fst[10] << 8) | fst[11];
+  const strTabOff = numEntries * 12;
+  
+  for (let i = 0; i < numEntries; i++) {
+    const entryOff = i * 12;
+    const typeName = (fst[entryOff] << 24) | (fst[entryOff+1] << 16) | 
+                     (fst[entryOff+2] << 8) | fst[entryOff+3];
+    const isDir = (typeName >>> 24) & 0xFF;
+    if (isDir !== 0) continue; // Skip directories
+    
+    const nameOff = typeName & 0xFFFFFF;
+    // Get filename
+    let nameEnd = strTabOff + nameOff;
+    while (nameEnd < fst.length && fst[nameEnd] !== 0) nameEnd++;
+    const nameBytes = fst.slice(strTabOff + nameOff, nameEnd);
+    const name = String.fromCharCode(...nameBytes);
+    
+    if (name === datName) {
+      // Found it! Update offset and size
+      const offPos = entryOff + 4;
+      const sizePos = entryOff + 8;
+      fst[offPos] = (newDatOffset >>> 24) & 0xFF;
+      fst[offPos+1] = (newDatOffset >>> 16) & 0xFF;
+      fst[offPos+2] = (newDatOffset >>> 8) & 0xFF;
+      fst[offPos+3] = newDatOffset & 0xFF;
+      fst[sizePos] = (newDatSize >>> 24) & 0xFF;
+      fst[sizePos+1] = (newDatSize >>> 16) & 0xFF;
+      fst[sizePos+2] = (newDatSize >>> 8) & 0xFF;
+      fst[sizePos+3] = newDatSize & 0xFF;
+      console.log(`Updated FST for ${datName}: offset=0x${newDatOffset.toString(16)}, size=${newDatSize}`);
+      break;
+    }
+  }
+  
+  return fst;
+}
+
 // === CMPR Decoder (GameCube DXT1) ===
 function rgb565ToRgb(r, g, b) {
   // Actually takes 565 value, returns [r,g,b]
@@ -352,13 +496,39 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     const entry = datEntries[currentTexIdx];
     
     if (hdMode && cmprSize !== entry.length) {
-      // HD Mode: rebuild DAT with larger file
-      // This is complex - for now, we'll do in-place if sizes match,
-      // otherwise show a message about using the desktop tool
-      status.textContent = `HD texture is ${cmprSize} bytes (original ${entry.length}). ` +
-        `DAT rebuild needed. Use the Python texture_parser.py for HD mode, ` +
-        `or wait for PWA DAT rebuild implementation.`;
-      // TODO: Implement JS TERF rebuild with FST update
+      // HD Mode: rebuild DAT with larger file using rebuildTerf()
+      status.textContent = `Rebuilding DAT with ${targetW}x${targetH} texture (${cmprSize} bytes)...`;
+      
+      // For HD textures, we replace the base texture data.
+      // The original file is 10908 bytes (8192 base + mipmaps).
+      // For HD, we'll create a new file with just the HD base (no mipmaps for simplicity),
+      // or we can generate mipmaps. For now, just the base.
+      const replacements = new Map();
+      replacements.set(currentTexIdx, cmprData);
+      
+      // Get filePad from TERF header (offset 12, 2 bytes BE)
+      const filePad = (datData[12] << 8) | datData[13];
+      
+      try {
+        const newDat = rebuildTerf(datData, replacements, filePad);
+        datData = newDat;
+        // Re-parse entries
+        datEntries = parseTerf(datData);
+        
+        // Mark that DAT has grown (for ISO rebuild with FST update)
+        window.datGrew = true;
+        window.originalDatSize = DAT_INFO[datName].size;
+        
+        status.textContent = `HD texture imported! DAT grew from ${window.originalDatSize} to ${datData.length} bytes. ` +
+          `Download patched ISO to save (FST will be updated).`;
+      } catch (err) {
+        status.textContent = `DAT rebuild failed: ${err.message}`;
+        console.error(err);
+        return;
+      }
+      
+      // Refresh preview
+      selectTexture(currentTexIdx);
       return;
     }
     
@@ -470,26 +640,68 @@ function encodeCmpr(imgData, width, height) {
   return output;
 }
 
-function downloadPatchedISO() {
+async function downloadPatchedISO() {
   if (!isoFile || !datData || !datName) return;
   
   const info = DAT_INFO[datName];
   const status = document.getElementById('status');
   status.textContent = 'Rebuilding ISO...';
   
-  const part1 = isoFile.slice(0, info.offset);
-  const part2 = new Blob([datData]);
-  const part3 = isoFile.slice(info.offset + info.size);
-  
-  const newIso = new Blob([part1, part2, part3], {type: 'application/octet-stream'});
-  const url = URL.createObjectURL(newIso);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'ncaa05_patched.iso';
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-  
-  status.textContent = 'Patched ISO downloaded!';
+  try {
+    let newIso;
+    
+    if (window.datGrew && datData.length !== info.size) {
+      // DAT grew (HD mode): append new DAT to end of ISO and update FST
+      status.textContent = 'DAT grew - updating FST and appending...';
+      
+      // Read FST (at 0x413700, size 0x415)
+      const FST_OFF = 0x413700;
+      const FST_SIZE = 0x415;
+      const fstBlob = isoFile.slice(FST_OFF, FST_OFF + FST_SIZE);
+      const fstBuffer = await fstBlob.arrayBuffer();
+      const fstData = new Uint8Array(fstBuffer);
+      
+      // New DAT will be appended at end of original ISO
+      const newDatOffset = isoFile.size;
+      const newDatSize = datData.length;
+      
+      // Update FST entry for this DAT
+      // DAT filename in FST is like "PLYRFACE.DAT"
+      const datFileName = datName + '.DAT';
+      const updatedFst = updateFstForDat(fstData, 0, datFileName, newDatOffset, newDatSize);
+      
+      // Build new ISO:
+      // [0 .. FST_OFF) + [updated FST] + [FST_OFF+FST_SIZE .. isoFile.size) + [new DAT]
+      const part1 = isoFile.slice(0, FST_OFF);
+      const part2 = new Blob([updatedFst]);
+      const part3 = isoFile.slice(FST_OFF + FST_SIZE);
+      const part4 = new Blob([datData]);
+      
+      newIso = new Blob([part1, part2, part3, part4], {type: 'application/octet-stream'});
+      
+      status.textContent = `ISO rebuilt with HD DAT! Original: ${(isoFile.size/1024/1024).toFixed(0)}MB, ` +
+        `New: ${(isoFile.size + newDatSize - info.size)/1024/1024}MB (appended ${((newDatSize-info.size)/1024).toFixed(0)}KB)`;
+    } else {
+      // Standard: in-place replacement (same size)
+      const part1 = isoFile.slice(0, info.offset);
+      const part2 = new Blob([datData]);
+      const part3 = isoFile.slice(info.offset + info.size);
+      
+      newIso = new Blob([part1, part2, part3], {type: 'application/octet-stream'});
+      status.textContent = 'Patched ISO downloaded! (in-place)';
+    }
+    
+    const url = URL.createObjectURL(newIso);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ncaa05_patched.iso';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    
+  } catch (err) {
+    status.textContent = 'ISO rebuild failed: ' + err.message;
+    console.error(err);
+  }
 }
 </script>
 </body>

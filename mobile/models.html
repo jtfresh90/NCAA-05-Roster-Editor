@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>NCAA 2005 Model Swap</title>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #1a1a2e; color: white; }
+  h1 { text-align: center; font-size: 22px; margin-bottom: 5px; }
+  .subtitle { text-align: center; color: #888; font-size: 13px; margin-bottom: 20px; }
+  .btn { display: block; width: 100%; padding: 15px; margin: 10px 0; background: #0f3460; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; box-sizing: border-box; text-align: center; }
+  .btn-green { background: #1a7a3a; }
+  .btn-orange { background: #b36a00; }
+  .btn:active { opacity: 0.8; }
+  #fileInput { display: none; }
+  .notice { background: #2a2a4a; padding: 15px; border-radius: 8px; margin: 15px 0; font-size: 13px; color: #aaa; line-height: 1.5; }
+  #modelList { list-style: none; padding: 0; max-height: 250px; overflow-y: auto; }
+  #modelList li { padding: 10px; border-bottom: 1px solid #2a2a4a; font-size: 14px; cursor: pointer; }
+  #modelList li.selected-a { background: #0f3460; border-left: 4px solid #4a9eff; }
+  #modelList li.selected-b { background: #3a2a0f; border-left: 4px solid #ff9a3d; }
+  #status { text-align: center; color: #888; margin: 10px; font-size: 14px; }
+  select { width: 100%; padding: 12px; border-radius: 6px; border: none; background: #2a2a4a; color: white; font-size: 16px; margin: 10px 0; }
+  .nav { text-align: center; margin-bottom: 15px; }
+  .nav a { color: #4a9eff; text-decoration: none; font-size: 14px; margin: 0 10px; }
+  .swap-info { background: #1a3a1a; padding: 12px; border-radius: 8px; margin: 10px 0; font-size: 14px; display: none; }
+</style>
+</head>
+<body>
+<div class="nav">
+  <a href="index.html">← Roster</a>
+  <a href="texture.html">Textures</a>
+</div>
+
+<h1>NCAA Football 2005</h1>
+<div class="subtitle">Model Swap v1.0</div>
+
+<div class="notice">
+  <strong>Swap 3D Models</strong> (trey31 method)<br>
+  Load ISO → PLADATA.DAT loads automatically →<br>
+  tap two models to select A and B → swap → download patched ISO.<br><br>
+  • Swaps entire model entries (no geometry decoding needed)<br>
+  • Same-size swaps are safest; different sizes also work<br>
+  • <strong>16 files at 1607 bytes</strong> = likely helmets/equipment<br>
+  • 100-200KB files = likely player bodies<br><br>
+  Filter by size to find matching model slots.
+</div>
+
+<label for="fileInput" class="btn">Load ISO File</label>
+<input type="file" id="fileInput" accept=".iso" />
+
+<div id="status"></div>
+
+<div id="modelSection" style="display: none;">
+  <label style="font-size: 14px; color: #aaa;">Filter by size:</label>
+  <select id="sizeFilter" onchange="applyFilter()">
+    <option value="">-- All sizes --</option>
+  </select>
+  
+  <ul id="modelList"></ul>
+  
+  <div id="swapInfo" class="swap-info"></div>
+  
+  <button class="btn btn-orange" onclick="doSwap()" id="swapBtn" style="display: none;">Swap A ↔ B</button>
+  <button class="btn" onclick="clearSelection()">Clear Selection</button>
+  <button class="btn btn-green" onclick="downloadPatchedISO()">Download Patched ISO</button>
+</div>
+
+<script>
+// PLADATA.DAT location in ISO (from FST)
+const PLADATA_OFFSET = 0x0;  // Will be determined from FST
+const PLADATA_NAME = 'PLADATA.DAT';
+
+let isoFile = null;
+let plaData = null;      // Uint8Array of PLADATA.DAT
+let plaEntries = [];     // [{offset, length}]
+let plaStart = 0;        // ISO offset of PLADATA.DAT
+let plaSize = 0;         // Original size
+let selectedA = -1;
+let selectedB = -1;
+let datGrew = false;
+
+// === ISO Loading ===
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  
+  isoFile = file;
+  const status = document.getElementById('status');
+  status.textContent = 'Loading ISO and finding PLADATA.DAT...';
+  
+  try {
+    // Read FST to find PLADATA.DAT
+    // FST is at 0x413700 based on earlier RE
+    const FST_OFF = 0x413700;
+    const fstBlob = file.slice(FST_OFF, FST_OFF + 0x1000);
+    const fstBuf = await fstBlob.arrayBuffer();
+    const fst = new Uint8Array(fstBuf);
+    
+    // Parse FST entries to find PLADATA.DAT
+    // FST format: [u32 type_name | u32 offset_or_parent | u32 size_or_next]
+    const view = new DataView(fstBuf);
+    const numEntries = view.getUint32(8, false); // BE
+    
+    let found = false;
+    for (let i = 1; i < numEntries && i < 200; i++) {
+      const entryOff = i * 12;
+      const nameOff = view.getUint32(entryOff, false) & 0xFFFFFF;
+      const fileOff = view.getUint32(entryOff + 4, false);
+      const fileSize = view.getUint32(entryOff + 8, false);
+      
+      // Get name from string table
+      const strTabStart = numEntries * 12;
+      let name = '';
+      for (let j = 0; j < 32; j++) {
+        const c = fst[strTabStart + nameOff + j];
+        if (c === 0) break;
+        name += String.fromCharCode(c);
+      }
+      
+      if (name === 'PLADATA.DAT') {
+        plaStart = fileOff;
+        plaSize = fileSize;
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found) {
+      // Fallback: try known offset from earlier RE
+      // PLADATA.DAT is a large file, search by TERF magic
+      status.textContent = 'PLADATA.DAT not in FST, scanning...';
+      // For now, error out
+      throw new Error('PLADATA.DAT not found in FST. This ISO may have a different layout.');
+    }
+    
+    status.textContent = `Found PLADATA.DAT at 0x${plaStart.toString(16)}, ${(plaSize/1024/1024).toFixed(1)}MB. Loading...`;
+    
+    // Load PLADATA.DAT
+    const plaBlob = file.slice(plaStart, plaStart + plaSize);
+    const plaBuf = await plaBlob.arrayBuffer();
+    plaData = new Uint8Array(plaBuf);
+    
+    // Parse TERF
+    plaEntries = parseTerf(plaData);
+    status.textContent = `Loaded ${plaEntries.length} models. Select two to swap.`;
+    
+    document.getElementById('modelSection').style.display = 'block';
+    buildSizeFilter();
+    renderList();
+    
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+});
+
+// === TERF Parser (shared with texture.html) ===
+function parseTerf(data) {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  
+  // Check TERF magic
+  if (data[0] !== 0x54 || data[1] !== 0x45 || data[2] !== 0x52 || data[3] !== 0x46) {
+    throw new Error('Not a TERF archive');
+  }
+  
+  const headerLen = view.getUint32(4, false);
+  const filePad = view.getUint16(12, false);
+  
+  // DIR1 at headerLen
+  let off = headerLen;
+  if (data[off] !== 0x44 || data[off+1] !== 0x49 || data[off+2] !== 0x52 || data[off+3] !== 0x31) {
+    throw new Error('DIR1 not found');
+  }
+  
+  const dirLen = view.getUint32(off + 4, false);
+  const numFiles = Math.floor((dirLen - 8) / 8);
+  
+  const entries = [];
+  for (let i = 0; i < numFiles; i++) {
+    const eOff = off + 8 + i * 8;
+    const fOffset = view.getUint32(eOff, false);
+    const fLength = view.getUint32(eOff + 4, false);
+    // Offset 0 or length 0 = empty slot
+    entries.push({ offset: fOffset, length: fLength, index: i });
+  }
+  
+  return entries.filter(e => e.length > 0);
+}
+
+// === UI ===
+function buildSizeFilter() {
+  const sizes = {};
+  plaEntries.forEach(e => {
+    sizes[e.length] = (sizes[e.length] || 0) + 1;
+  });
+  
+  const sorted = Object.entries(sizes).sort((a, b) => b[1] - a[1]).slice(0, 30);
+  const sel = document.getElementById('sizeFilter');
+  sel.innerHTML = '<option value="">-- All sizes --</option>';
+  sorted.forEach(([size, count]) => {
+    const opt = document.createElement('option');
+    opt.value = size;
+    opt.textContent = `${size} bytes (${count} files)`;
+    sel.appendChild(opt);
+  });
+}
+
+let currentFilter = '';
+function applyFilter() {
+  currentFilter = document.getElementById('sizeFilter').value;
+  renderList();
+}
+
+function renderList() {
+  const list = document.getElementById('modelList');
+  list.innerHTML = '';
+  
+  const filtered = currentFilter 
+    ? plaEntries.filter(e => e.length === parseInt(currentFilter))
+    : plaEntries;
+  
+  // Limit display to first 500
+  const display = filtered.slice(0, 500);
+  
+  display.forEach(e => {
+    const li = document.createElement('li');
+    li.textContent = `[${e.index}] ${e.length} bytes`;
+    li.dataset.index = e.index;
+    
+    if (e.index === selectedA) li.classList.add('selected-a');
+    if (e.index === selectedB) li.classList.add('selected-b');
+    
+    li.onclick = () => selectModel(e.index);
+    list.appendChild(li);
+  });
+  
+  if (filtered.length > 500) {
+    const li = document.createElement('li');
+    li.textContent = `... and ${filtered.length - 500} more (use size filter)`;
+    li.style.color = '#888';
+    list.appendChild(li);
+  }
+}
+
+function selectModel(idx) {
+  if (selectedA === -1) {
+    selectedA = idx;
+  } else if (selectedB === -1 && idx !== selectedA) {
+    selectedB = idx;
+  } else {
+    // Reset
+    selectedA = idx;
+    selectedB = -1;
+  }
+  updateSwapUI();
+  renderList();
+}
+
+function clearSelection() {
+  selectedA = -1;
+  selectedB = -1;
+  updateSwapUI();
+  renderList();
+}
+
+function updateSwapUI() {
+  const info = document.getElementById('swapInfo');
+  const btn = document.getElementById('swapBtn');
+  
+  if (selectedA !== -1 && selectedB !== -1) {
+    const a = plaEntries.find(e => e.index === selectedA);
+    const b = plaEntries.find(e => e.index === selectedB);
+    info.style.display = 'block';
+    info.innerHTML = `<strong>Swap:</strong> [${selectedA}] (${a.length} bytes) ↔ [${selectedB}] (${b.length} bytes)` +
+      (a.length !== b.length ? '<br>⚠️ Different sizes - DAT will be rebuilt' : '<br>✓ Same size - safe swap');
+    btn.style.display = 'block';
+  } else if (selectedA !== -1) {
+    info.style.display = 'block';
+    info.innerHTML = `Selected A: [${selectedA}]. Tap another model for B.`;
+    btn.style.display = 'none';
+  } else {
+    info.style.display = 'none';
+    btn.style.display = 'none';
+  }
+}
+
+// === TERF Rebuild (for model swap) ===
+function rebuildTerf(originalData, replacements, filePad) {
+  const view = new DataView(originalData.buffer, originalData.byteOffset, originalData.byteLength);
+  const headerLen = view.getUint32(4, false);
+  
+  // Parse original entries (including empty ones for correct indexing)
+  let off = headerLen;
+  const dirLen = view.getUint32(off + 4, false);
+  const numFiles = Math.floor((dirLen - 8) / 8);
+  
+  const origEntries = [];
+  for (let i = 0; i < numFiles; i++) {
+    const eOff = off + 8 + i * 8;
+    origEntries.push({
+      offset: view.getUint32(eOff, false),
+      length: view.getUint32(eOff + 4, false)
+    });
+  }
+  
+  // Find DATA section
+  let dataOff = headerLen + dirLen;
+  // Align to filePad
+  dataOff = Math.ceil(dataOff / filePad) * filePad;
+  
+  // Collect file data
+  const filesData = [];
+  for (let i = 0; i < numFiles; i++) {
+    // Map from filtered index to original index
+    // replacements uses filtered indices, need to map
+    if (replacements.has(i)) {
+      filesData.push(replacements.get(i));
+    } else if (origEntries[i].length > 0) {
+      filesData.push(originalData.slice(origEntries[i].offset, origEntries[i].offset + origEntries[i].length));
+    } else {
+      filesData.push(new Uint8Array(0));
+    }
+  }
+  
+  // Rebuild
+  const newData = [];
+  // Header
+  newData.push(originalData.slice(0, headerLen));
+  
+  // DIR1 placeholder (will fill after computing offsets)
+  const dir1Size = 8 + numFiles * 8;
+  const dir1 = new Uint8Array(dir1Size);
+  const dir1View = new DataView(dir1.buffer);
+  dir1[0] = 0x44; dir1[1] = 0x49; dir1[2] = 0x52; dir1[3] = 0x31; // DIR1
+  dir1View.setUint32(4, dirLen, false); // Keep original dirLen
+  
+  // DATA header placeholder
+  let currentOff = dataOff;
+  const dataStart = currentOff;
+  
+  // We'll build the full array at the end
+  // First, compute all offsets
+  const newOffsets = [];
+  for (let i = 0; i < numFiles; i++) {
+    if (filesData[i].length === 0) {
+      newOffsets.push({ offset: 0, length: 0 });
+    } else {
+      // Align current offset
+      currentOff = Math.ceil(currentOff / filePad) * filePad;
+      newOffsets.push({ offset: currentOff, length: filesData[i].length });
+      currentOff += filesData[i].length;
+    }
+  }
+  
+  // Now build the final array
+  const totalSize = currentOff;
+  const result = new Uint8Array(totalSize);
+  
+  // Copy header
+  result.set(originalData.slice(0, headerLen), 0);
+  
+  // Write DIR1 entries
+  for (let i = 0; i < numFiles; i++) {
+    const eOff = headerLen + 8 + i * 8;
+    const dv = new DataView(result.buffer);
+    dv.setUint32(eOff, newOffsets[i].offset, false);
+    dv.setUint32(eOff + 4, newOffsets[i].length, false);
+  }
+  // DIR1 magic and length
+  result[headerLen] = 0x44; result[headerLen+1] = 0x49;
+  result[headerLen+2] = 0x52; result[headerLen+3] = 0x31;
+  new DataView(result.buffer).setUint32(headerLen + 4, dirLen, false);
+  
+  // Write DATA magic
+  const dataMagicOff = dataStart - 8; // DATA header is 8 bytes before content?
+  // Actually, let's just write files at their offsets
+  for (let i = 0; i < numFiles; i++) {
+    if (filesData[i].length > 0) {
+      result.set(filesData[i], newOffsets[i].offset);
+    }
+  }
+  
+  return result;
+}
+
+function doSwap() {
+  if (selectedA === -1 || selectedB === -1) return;
+  
+  const status = document.getElementById('status');
+  status.textContent = `Swapping [${selectedA}] ↔ [${selectedB}]...`;
+  
+  try {
+    const entryA = plaEntries.find(e => e.index === selectedA);
+    const entryB = plaEntries.find(e => e.index === selectedB);
+    
+    const dataA = plaData.slice(entryA.offset, entryA.offset + entryA.length);
+    const dataB = plaData.slice(entryB.offset, entryB.offset + entryB.length);
+    
+    const view = new DataView(plaData.buffer, plaData.byteOffset, plaData.byteLength);
+    const filePad = view.getUint16(12, false);
+    
+    const replacements = new Map();
+    replacements.set(selectedA, dataB);
+    replacements.set(selectedB, dataA);
+    
+    const newDat = rebuildTerf(plaData, replacements, filePad);
+    
+    if (newDat.length !== plaData.length) {
+      datGrew = true;
+    }
+    
+    plaData = newDat;
+    plaEntries = parseTerf(plaData);
+    
+    status.textContent = `Swapped! [${selectedA}] ↔ [${selectedB}]. Download patched ISO to save.`;
+    clearSelection();
+    buildSizeFilter();
+    renderList();
+    
+  } catch (err) {
+    status.textContent = 'Swap failed: ' + err.message;
+    console.error(err);
+  }
+}
+
+// === ISO Download ===
+async function downloadPatchedISO() {
+  if (!isoFile || !plaData) return;
+  
+  const status = document.getElementById('status');
+  status.textContent = 'Rebuilding ISO...';
+  
+  try {
+    let newIso;
+    
+    if (datGrew || plaData.length !== plaSize) {
+      // DAT changed size: append and update FST
+      status.textContent = 'Updating FST...';
+      
+      const FST_OFF = 0x413700;
+      const fstBlob = isoFile.slice(FST_OFF, FST_OFF + 0x1000);
+      const fstBuf = await fstBlob.arrayBuffer();
+      const fst = new Uint8Array(fstBuf);
+      
+      // Find and update PLADATA.DAT entry
+      const view = new DataView(fstBuf);
+      const numEntries = view.getUint32(8, false);
+      
+      for (let i = 1; i < numEntries && i < 200; i++) {
+        const entryOff = i * 12;
+        const nameOff = view.getUint32(entryOff, false) & 0xFFFFFF;
+        const strTabStart = numEntries * 12;
+        let name = '';
+        for (let j = 0; j < 32; j++) {
+          const c = fst[strTabStart + nameOff + j];
+          if (c === 0) break;
+          name += String.fromCharCode(c);
+        }
+        
+        if (name === 'PLADATA.DAT') {
+          // Update offset (point to end of ISO) and size
+          const newOff = isoFile.size;
+          view.setUint32(entryOff + 4, newOff, false);
+          view.setUint32(entryOff + 8, plaData.length, false);
+          break;
+        }
+      }
+      
+      const part1 = isoFile.slice(0, FST_OFF);
+      const part2 = new Blob([fst]);
+      const part3 = isoFile.slice(FST_OFF + 0x1000);
+      const part4 = new Blob([plaData]);
+      
+      newIso = new Blob([part1, part2, part3, part4], {type: 'application/octet-stream'});
+      status.textContent = `ISO rebuilt! PLADATA.DAT appended (${(plaData.length/1024/1024).toFixed(1)}MB)`;
+    } else {
+      // Same size: in-place
+      const part1 = isoFile.slice(0, plaStart);
+      const part2 = new Blob([plaData]);
+      const part3 = isoFile.slice(plaStart + plaSize);
+      newIso = new Blob([part1, part2, part3], {type: 'application/octet-stream'});
+      status.textContent = 'ISO rebuilt (in-place)!';
+    }
+    
+    const url = URL.createObjectURL(newIso);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ncaa05_modelswap.iso';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    
+  } catch (err) {
+    status.textContent = 'ISO rebuild failed: ' + err.message;
+    console.error(err);
+  }
+}
+</script>
+</body>
+</html>

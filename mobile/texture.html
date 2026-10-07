@@ -495,55 +495,97 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
     
     const entry = datEntries[currentTexIdx];
     
-    if (hdMode && cmprSize !== entry.length) {
-      // HD Mode: rebuild DAT with larger file using rebuildTerf()
-      status.textContent = `Rebuilding DAT with ${targetW}x${targetH} texture (${cmprSize} bytes)...`;
+    // === Always-Quality Import ===
+    // Build a complete texture file with proper mipmaps generated from the source image.
+    // This ensures quality at all distances (no stale mipmaps from the old texture).
+    //
+    // File layout for 10908-byte face textures:
+    //   8192 bytes: 128x128 base CMPR
+    //   2048 bytes: 64x64 mipmap CMPR
+    //    512 bytes: 32x32 mipmap CMPR
+    //    128 bytes: 16x16 mipmap CMPR
+    //     28 bytes: trailer (preserved from original)
+    //
+    // For HD mode (>128x128), we include only the base (no mipmaps) since the
+    // game will use the high-res base. The DAT is rebuilt via rebuildTerf().
+    
+    status.textContent = `Encoding ${targetW}x${targetH} with mipmaps...`;
+    
+    // Helper: downscale image and encode to CMPR
+    function encodeMipmap(sourceImg, sw, sh, tw, th) {
+      const c = document.createElement('canvas');
+      c.width = tw; c.height = th;
+      const cx = c.getContext('2d');
+      // Use high-quality downscaling
+      cx.imageSmoothingEnabled = true;
+      cx.imageSmoothingQuality = 'high';
+      cx.drawImage(sourceImg, 0, 0, sw, sh, 0, 0, tw, th);
+      const d = cx.getImageData(0, 0, tw, th);
+      return encodeCmpr(d, tw, th);
+    }
+    
+    let newFileData;
+    
+    if (hdMode && (targetW > 128 || targetH > 128)) {
+      // HD Mode: base only (no mipmaps), larger file
+      // The game uses the high-res base directly
+      newFileData = cmprData;
+      status.textContent = `HD: ${targetW}x${targetH} base only (${cmprData.length} bytes)...`;
+    } else {
+      // Standard: full mipmap chain for maximum quality at all distances
+      // We need the source image at full res for mipmap generation
+      const mip64 = encodeMipmap(img, targetW, targetH, 64, 64);   // 2048 bytes
+      const mip32 = encodeMipmap(img, targetW, targetH, 32, 32);   // 512 bytes
+      const mip16 = encodeMipmap(img, targetW, targetH, 16, 16);   // 128 bytes
       
-      // For HD textures, we replace the base texture data.
-      // The original file is 10908 bytes (8192 base + mipmaps).
-      // For HD, we'll create a new file with just the HD base (no mipmaps for simplicity),
-      // or we can generate mipmaps. For now, just the base.
-      const replacements = new Map();
-      replacements.set(currentTexIdx, cmprData);
+      // Preserve the 28-byte trailer from the original file
+      const origFileStart = entry.offset;
+      const origFileEnd = entry.offset + entry.length;
+      const trailerSize = 28;
+      const trailer = datData.slice(origFileEnd - trailerSize, origFileEnd);
       
-      // Get filePad from TERF header (offset 12, 2 bytes BE)
-      const filePad = (datData[12] << 8) | datData[13];
+      // Assemble: base + mip64 + mip32 + mip16 + trailer
+      const totalSize = cmprData.length + mip64.length + mip32.length + mip16.length + trailerSize;
+      newFileData = new Uint8Array(totalSize);
+      let off = 0;
+      newFileData.set(cmprData, off); off += cmprData.length;
+      newFileData.set(mip64, off); off += mip64.length;
+      newFileData.set(mip32, off); off += mip32.length;
+      newFileData.set(mip16, off); off += mip16.length;
+      newFileData.set(trailer, off);
       
-      try {
-        const newDat = rebuildTerf(datData, replacements, filePad);
-        datData = newDat;
-        // Re-parse entries
-        datEntries = parseTerf(datData);
-        
-        // Mark that DAT has grown (for ISO rebuild with FST update)
+      status.textContent = `Built ${totalSize}-byte file with full mipmap chain...`;
+    }
+    
+    // Always rebuild TERF (not in-place) for a clean, correct file
+    const replacements = new Map();
+    replacements.set(currentTexIdx, newFileData);
+    
+    // Get filePad from TERF header (offset 12, 2 bytes BE)
+    const filePad = (datData[12] << 8) | datData[13];
+    
+    try {
+      const newDat = rebuildTerf(datData, replacements, filePad);
+      const oldSize = datData.length;
+      datData = newDat;
+      // Re-parse entries
+      datEntries = parseTerf(datData);
+      
+      // Track if DAT grew (for ISO rebuild with FST update)
+      if (datData.length !== oldSize) {
         window.datGrew = true;
         window.originalDatSize = DAT_INFO[datName].size;
-        
-        status.textContent = `HD texture imported! DAT grew from ${window.originalDatSize} to ${datData.length} bytes. ` +
+        status.textContent = `Imported with full quality! DAT: ${oldSize} -> ${datData.length} bytes. ` +
           `Download patched ISO to save (FST will be updated).`;
-      } catch (err) {
-        status.textContent = `DAT rebuild failed: ${err.message}`;
-        console.error(err);
-        return;
+      } else {
+        status.textContent = `Imported with full quality! (${newFileData.length} bytes, mipmaps regenerated). ` +
+          `Download patched ISO to save.`;
       }
-      
-      // Refresh preview
-      selectTexture(currentTexIdx);
+    } catch (err) {
+      status.textContent = `DAT rebuild failed: ${err.message}`;
+      console.error(err);
       return;
     }
-    
-    // Standard mode: in-place replacement (must keep same size)
-    if (entry.length < 8192) {
-      throw new Error(`Texture too small: ${entry.length} bytes`);
-    }
-    
-    // Write CMPR data at entry offset (first 8192 bytes, preserve mipmaps)
-    const writeSize = Math.min(8192, cmprData.length, entry.length);
-    for (let i = 0; i < writeSize; i++) {
-      datData[entry.offset + i] = cmprData[i];
-    }
-    
-    status.textContent = `Imported! Replaced ${writeSize} bytes in texture ${currentTexIdx}. Download patched ISO to save.`;
     
     // Refresh preview
     selectTexture(currentTexIdx);

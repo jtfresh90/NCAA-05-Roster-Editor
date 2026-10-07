@@ -193,6 +193,46 @@ def encode_cmpr(img, width=64, height=64):
     return bytes(output)
 
 
+def build_texture_with_mipmaps(img, base_size=128, trailer=None):
+    """
+    Build a complete texture file with proper mipmaps for maximum quality.
+    
+    Args:
+        img: PIL Image (source)
+        base_size: base texture size (128 for standard, 256 for HD)
+        trailer: bytes to append at end (28-byte trailer from original, or None)
+    
+    Returns:
+        bytes: Complete texture file (base + mipmaps [+ trailer])
+    
+    For 128x128 base:
+        8192 bytes: 128x128 base
+        2048 bytes: 64x64 mipmap
+         512 bytes: 32x32 mipmap
+         128 bytes: 16x16 mipmap
+          28 bytes: trailer (if provided)
+        Total: 10908 bytes (with trailer)
+    
+    For 256x256 HD base:
+        32768 bytes: 256x256 base only (no mipmaps)
+    """
+    if base_size > 128:
+        # HD: base only
+        return encode_cmpr(img, base_size, base_size)
+    
+    # Standard: full mipmap chain
+    base = encode_cmpr(img, 128, 128)
+    mip64 = encode_cmpr(img, 64, 64)
+    mip32 = encode_cmpr(img, 32, 32)
+    mip16 = encode_cmpr(img, 16, 16)
+    
+    result = base + mip64 + mip32 + mip16
+    if trailer:
+        result += trailer
+    
+    return result
+
+
 class TerfArchive:
     """Parser for TERF texture archives."""
     

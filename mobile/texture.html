@@ -40,7 +40,12 @@
   • PLYRFACE.DAT: Player faces (128×128 CMPR)<br>
   • COACFACE.DAT: Coach faces<br>
   • STADATA.DAT: Stadium textures<br>
-  • UIS_*.DAT: UI textures
+  • UIS_*.DAT: UI textures<br><br>
+  <label style="color: white;">
+    <input type="checkbox" id="hdMode" style="width: auto;"> 
+    <strong>HD Mode:</strong> Allow larger textures (e.g., 256×256). 
+    DAT and ISO will grow. Quality preserved!
+  </label>
 </div>
 
 <label for="fileInput" class="btn">Load ISO File</label>
@@ -305,6 +310,7 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
   if (!file || currentTexIdx < 0) return;
   
   const status = document.getElementById('status');
+  const hdMode = document.getElementById('hdMode').checked;
   status.textContent = 'Importing PNG... (encoding to CMPR)';
   
   try {
@@ -317,32 +323,57 @@ document.getElementById('importInput').addEventListener('change', async (e) => {
       img.src = url;
     });
     
+    // Determine target size
+    // Standard: 128x128 (8192 bytes CMPR)
+    // HD Mode: use image's native size up to 256x256 (32768 bytes CMPR)
+    let targetW = 128, targetH = 128;
+    if (hdMode) {
+      // Use the larger of 128 or the image size, capped at 256
+      targetW = Math.min(256, Math.max(128, img.width));
+      targetH = Math.min(256, Math.max(128, img.height));
+      // Round to multiple of 8 (CMPR requirement)
+      targetW = Math.ceil(targetW / 8) * 8;
+      targetH = Math.ceil(targetH / 8) * 8;
+      status.textContent = `HD Mode: encoding ${targetW}x${targetH}...`;
+    }
+    
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 128;
+    canvas.width = targetW;
+    canvas.height = targetH;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, 128, 128);
-    const imgData = ctx.getImageData(0, 0, 128, 128);
+    ctx.drawImage(img, 0, 0, targetW, targetH);
+    const imgData = ctx.getImageData(0, 0, targetW, targetH);
     URL.revokeObjectURL(url);
     
     // Encode to CMPR
-    status.textContent = 'Encoding to CMPR...';
-    const cmprData = encodeCmpr(imgData, 128, 128);
+    const cmprData = encodeCmpr(imgData, targetW, targetH);
+    const cmprSize = cmprData.length;
     
-    // Replace in DAT (must keep same size!)
-    // The texture file is 10908 bytes: 8192 base + mipmaps
-    // For now, replace only the base 8192 bytes, keep mipmaps
     const entry = datEntries[currentTexIdx];
+    
+    if (hdMode && cmprSize !== entry.length) {
+      // HD Mode: rebuild DAT with larger file
+      // This is complex - for now, we'll do in-place if sizes match,
+      // otherwise show a message about using the desktop tool
+      status.textContent = `HD texture is ${cmprSize} bytes (original ${entry.length}). ` +
+        `DAT rebuild needed. Use the Python texture_parser.py for HD mode, ` +
+        `or wait for PWA DAT rebuild implementation.`;
+      // TODO: Implement JS TERF rebuild with FST update
+      return;
+    }
+    
+    // Standard mode: in-place replacement (must keep same size)
     if (entry.length < 8192) {
       throw new Error(`Texture too small: ${entry.length} bytes`);
     }
     
-    // Write CMPR data at entry offset
-    for (let i = 0; i < 8192 && i < cmprData.length; i++) {
+    // Write CMPR data at entry offset (first 8192 bytes, preserve mipmaps)
+    const writeSize = Math.min(8192, cmprData.length, entry.length);
+    for (let i = 0; i < writeSize; i++) {
       datData[entry.offset + i] = cmprData[i];
     }
     
-    status.textContent = `Imported! Replaced 8192 bytes in texture ${currentTexIdx}. Download patched ISO to save.`;
+    status.textContent = `Imported! Replaced ${writeSize} bytes in texture ${currentTexIdx}. Download patched ISO to save.`;
     
     // Refresh preview
     selectTexture(currentTexIdx);

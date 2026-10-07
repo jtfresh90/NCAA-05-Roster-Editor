@@ -32,18 +32,18 @@
 </head>
 <body>
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">GCI Roster Editor v1.2.0</div>
+<div class="subtitle">Roster Editor v1.3.0</div>
 
 <div class="notice">
-  <strong>Load a GCI save file</strong><br>
-  Export a roster save from Dolphin (or download from gc-saves.com),
-  edit player ratings, then load the modified GCI back in Dolphin.<br><br>
+  <strong>Load a GCI save or ISO</strong><br>
+  <b>GCI:</b> Export roster save from Dolphin, edit, load back.<br>
+  <b>ISO:</b> Load NCAA 05 ISO, edit default rosters, download patched ISO.<br><br>
   • PLAY table: 85 fields, 52-byte records<br>
   • Supports rating edits and name changes
 </div>
 
-<label for="fileInput" class="btn">Load GCI Save File</label>
-<input type="file" id="fileInput" accept=".gci" />
+<label for="fileInput" class="btn">Load GCI or ISO File</label>
+<input type="file" id="fileInput" accept=".gci,.iso" />
 
 <div id="status"></div>
 
@@ -253,61 +253,303 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   if (!file) return;
   
   const status = document.getElementById('status');
-  status.textContent = 'Loading GCI...';
+  const fileName = file.name.toLowerCase();
+  const isIso = fileName.endsWith('.iso');
+  
+  status.textContent = isIso ? 'Loading ISO (slicing LEAGUE.DAT)...' : 'Loading GCI...';
   
   try {
-    const buffer = await file.arrayBuffer();
-    gciData = new Uint8Array(buffer);
+    if (isIso) {
+      // ISO: extract LEAGUE.DAT via slice (2MB at 0x4E352D78)
+      const LEAGUE_OFF = 0x4E352D78;
+      const LEAGUE_SIZE = 2176504;
+      const blob = file.slice(LEAGUE_OFF, LEAGUE_OFF + LEAGUE_SIZE);
+      const buffer = await blob.arrayBuffer();
+      const leagueData = new Uint8Array(buffer);
+      
+      // Store ISO file reference for rebuilding
+      window.isoFile = file;
+      window.leagueData = leagueData;
+      
+      // Parse YALP sections (find all, use first schema)
+      status.textContent = 'Parsing 421 YALP sections...';
+      await parseIsoLeague(leagueData);
+      
+      status.textContent = `Loaded ISO: ${isoPlayerCount} players across ${isoSections.length} teams`;
+      document.getElementById('infoBox').innerHTML = 
+        `<strong>ISO loaded:</strong> ${file.name}<br>` +
+        `LEAGUE.DAT: ${isoSections.length} YALP sections, ${isoPlayerCount} players<br>` +
+        `Tap a player to edit. Download creates patched ISO.`;
+      
+      populateIsoPlayerList();
+      
+    } else {
+      // GCI: existing logic
+      const buffer = await file.arrayBuffer();
+      gciData = new Uint8Array(buffer);
+      
+      // Find DB marker
+      let dbOff = -1;
+      for (let i = 0; i < gciData.length - 2; i++) {
+        if (gciData[i] === 0x44 && gciData[i+1] === 0x42) { // 'DB'
+          dbOff = i;
+          break;
+        }
+      }
+      if (dbOff < 0) throw new Error('No DB found in GCI');
+      
+      // Extract DB
+      dbData = gciData.slice(dbOff, dbOff + GCI_DB_SIZE);
+      
+      // Parse schema
+      const fieldCount = parseSchema();
+      if (fieldCount === 0) throw new Error('Failed to parse PLAY schema');
+      
+      // Estimate player count
+      playerCount = 0;
+      for (let i = 0; i < 2000; i++) {
+        const off = PLAY_RECORDS_OFFSET + i * PLAY_RECORD_SIZE;
+        if (off + PLAY_RECORD_SIZE > dbData.length) break;
+        playerCount++;
+      }
+      
+      status.textContent = `Loaded: ${fieldCount} fields, ${playerCount} players`;
+      document.getElementById('infoBox').innerHTML = 
+        `<strong>GCI loaded:</strong> ${file.name}<br>` +
+        `PLAY table: ${fieldCount} fields, ${playerCount} records<br>` +
+        `Tap a player to edit.`;
+      
+      populateGciPlayerList();
+    }
     
-    // Find DB marker
-    let dbOff = -1;
-    for (let i = 0; i < gciData.length - 2; i++) {
-      if (gciData[i] === 0x44 && gciData[i+1] === 0x42) { // 'DB'
-        dbOff = i;
+    document.getElementById('playerSection').style.display = 'block';
+    setupEditorUI();
+    
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+    console.error(err);
+  }
+});
+
+// === ISO LEAGUE.DAT support ===
+let isoSections = [];  // Array of {offset, fields, recordsOffset}
+let isoPlayerCount = 0;
+let isoPlayerIndex = [];  // Maps global idx -> {sectionIdx, localIdx}
+
+async function parseIsoLeague(leagueData) {
+  isoSections = [];
+  isoPlayerIndex = [];
+  
+  // Find all YALP sections
+  let pos = 0;
+  while (true) {
+    const idx = findBytes(leagueData, [0x59, 0x41, 0x4C, 0x50], pos); // 'YALP'
+    if (idx < 0) break;
+    
+    // Skip if too close to previous (false positive)
+    if (isoSections.length > 0 && idx - isoSections[isoSections.length-1].offset < 0x1000) {
+      pos = idx + 1;
+      continue;
+    }
+    
+    // Find schema (01FP within 0x2000 bytes)
+    let schemaOff = -1;
+    for (let i = idx; i < Math.min(idx + 0x2000, leagueData.length - 4); i++) {
+      if (leagueData[i] === 0x30 && leagueData[i+1] === 0x31 && 
+          leagueData[i+2] === 0x46 && leagueData[i+3] === 0x50) { // '01FP'
+        schemaOff = i;
         break;
       }
     }
-    if (dbOff < 0) throw new Error('No DB found in GCI');
     
-    // Extract DB
-    dbData = gciData.slice(dbOff, dbOff + GCI_DB_SIZE);
-    
-    // Parse schema
-    const fieldCount = parseSchema();
-    if (fieldCount === 0) throw new Error('Failed to parse PLAY schema');
-    
-    // Estimate player count (scan for non-empty records, cap at 2000)
-    playerCount = 0;
-    for (let i = 0; i < 2000; i++) {
-      const off = PLAY_RECORDS_OFFSET + i * PLAY_RECORD_SIZE;
-      if (off + PLAY_RECORD_SIZE > dbData.length) break;
-      playerCount++;
-    }
-    
-    status.textContent = `Loaded: ${fieldCount} fields, ${playerCount} players`;
-    document.getElementById('infoBox').innerHTML = 
-      `<strong>GCI loaded:</strong> ${file.name}<br>` +
-      `PLAY table: ${fieldCount} fields, ${playerCount} records<br>` +
-      `Tap a player to edit.`;
-    
-    // Populate player list
-    const list = document.getElementById('playerList');
-    list.innerHTML = '';
-    const showCount = Math.min(playerCount, 100);
-    for (let i = 0; i < showCount; i++) {
-      const [first, last] = getPlayerName(i);
-      const name = (first + ' ' + last).trim() || `Player ${i}`;
-      const ppos = getField(i, 'PPOS');
-      const posName = POSITIONS[ppos] || `P${ppos}`;
-      const ovr = getField(i, 'POVR');
+    if (schemaOff > 0) {
+      // Parse schema (reuse parseSchema logic but with offset)
+      const savedDb = dbData;
+      dbData = leagueData; // Temporarily set for parseSchema
+      const savedOff = PLAY_SCHEMA_OFFSET;
+      // We need a version that takes offset - for now, just count fields
+      let fieldCount = 0;
+      let off = schemaOff;
+      while (off + 16 <= leagueData.length && fieldCount < 100) {
+        if (leagueData[off] === 0x21 && leagueData[off+1] === 0x00) { off += 3; continue; }
+        const name = String.fromCharCode(leagueData[off], leagueData[off+1], leagueData[off+2], leagueData[off+3]);
+        if (!/^[A-Za-z0-9_]{4}$/.test(name)) break;
+        const size = (leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7];
+        if (size > 5000) break;
+        off += 16;
+        fieldCount++;
+        if (off - schemaOff > 2000) break;
+      }
+      dbData = savedDb;
       
-      const li = document.createElement('li');
-      li.textContent = `${name} (${posName}) OVR:${ovr}`;
-      li.onclick = () => selectPlayer(i);
-      list.appendChild(li);
+      if (fieldCount >= 80 && fieldCount <= 90) {
+        // Find records offset (after schema)
+        const recordsOff = off;
+        isoSections.push({
+          offset: idx,
+          schemaOffset: schemaOff,
+          recordsOffset: recordsOff,
+          fieldCount: fieldCount
+        });
+      }
     }
-    if (playerCount > 100) {
-      const li = document.createElement('li');
+    
+    pos = idx + 1;
+    if (isoSections.length >= 500) break;
+    
+    // Yield to UI occasionally
+    if (isoSections.length % 50 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  
+  // Build player index (assume 50 players per section max for UI)
+  isoPlayerCount = 0;
+  for (let si = 0; si < isoSections.length; si++) {
+    const sec = isoSections[si];
+    // Estimate: section size / 52 bytes per record, cap at 80
+    const nextOff = (si + 1 < isoSections.length) ? isoSections[si+1].offset : leagueData.length;
+    const avail = nextOff - sec.recordsOffset;
+    const count = Math.min(Math.floor(avail / 52), 80);
+    for (let li = 0; li < count; li++) {
+      isoPlayerIndex.push({sectionIdx: si, localIdx: li});
+    }
+  }
+  isoPlayerCount = isoPlayerIndex.length;
+  
+  // Parse schema from first section for field definitions
+  if (isoSections.length > 0) {
+    const sec = isoSections[0];
+    const savedDb = dbData;
+    dbData = leagueData;
+    // Temporarily override PLAY_SCHEMA_OFFSET
+    const origOff = PLAY_SCHEMA_OFFSET;
+    // Hack: parseSchema uses PLAY_SCHEMA_OFFSET, so we monkey-patch
+    // For now, just manually parse into fields
+    fields = {};
+    let off = sec.schemaOffset;
+    while (off + 16 <= leagueData.length) {
+      if (leagueData[off] === 0x21 && leagueData[off+1] === 0x00) { off += 3; continue; }
+      const nameBytes = [leagueData[off], leagueData[off+1], leagueData[off+2], leagueData[off+3]];
+      const name = String.fromCharCode(...nameBytes);
+      if (!/^[A-Za-z0-9_]{4}$/.test(name)) break;
+      const size = (leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7];
+      const ftype = (leagueData[off+8]<<24)|(leagueData[off+9]<<16)|(leagueData[off+10]<<8)|leagueData[off+11];
+      if (size > 5000 || ftype > 20) break;
+      if (leagueData[off+12] === 0x21) { off += 15; continue; }
+      const bit = (leagueData[off+12]<<24)|(leagueData[off+13]<<16)|(leagueData[off+14]<<8)|leagueData[off+15];
+      if (bit > 10000) break;
+      fields[gcToPc(name)] = {size, bit};
+      off += 16;
+      if (Object.keys(fields).length > 200) break;
+    }
+    dbData = savedDb;
+  }
+}
+
+function findBytes(data, pattern, start) {
+  for (let i = start; i <= data.length - pattern.length; i++) {
+    let match = true;
+    for (let j = 0; j < pattern.length; j++) {
+      if (data[i+j] !== pattern[j]) { match = false; break; }
+    }
+    if (match) return i;
+  }
+  return -1;
+}
+
+function getIsoField(globalIdx, fname) {
+  const {sectionIdx, localIdx} = isoPlayerIndex[globalIdx];
+  const sec = isoSections[sectionIdx];
+  const f = fields[fname];
+  if (!f) return 0;
+  const recOff = sec.recordsOffset + localIdx * 52;
+  return getBits(window.leagueData, recOff, f.bit, f.size);
+}
+
+function setIsoField(globalIdx, fname, val) {
+  const {sectionIdx, localIdx} = isoPlayerIndex[globalIdx];
+  const sec = isoSections[sectionIdx];
+  const f = fields[fname];
+  if (!f) return;
+  const recOff = sec.recordsOffset + localIdx * 52;
+  setBits(window.leagueData, recOff, f.bit, f.size, val);
+}
+
+function populateIsoPlayerList() {
+  const list = document.getElementById('playerList');
+  list.innerHTML = '';
+  const showCount = Math.min(isoPlayerCount, 100);
+  for (let i = 0; i < showCount; i++) {
+    const ppos = getIsoField(i, 'PPOS');
+    const posName = POSITIONS[ppos] || `P${ppos}`;
+    const ovr = getIsoField(i, 'POVR');
+    const li = document.createElement('li');
+    li.textContent = `Player ${i} (${posName}) OVR:${ovr}`;
+    li.onclick = () => selectIsoPlayer(i);
+    list.appendChild(li);
+  }
+  if (isoPlayerCount > 100) {
+    const li = document.createElement('li');
+    li.textContent = `... and ${isoPlayerCount - 100} more`;
+    li.style.color = '#888';
+    list.appendChild(li);
+  }
+}
+
+function populateGciPlayerList() {
+  const list = document.getElementById('playerList');
+  list.innerHTML = '';
+  const showCount = Math.min(playerCount, 100);
+  for (let i = 0; i < showCount; i++) {
+    const [first, last] = getPlayerName(i);
+    const name = (first + ' ' + last).trim() || `Player ${i}`;
+    const ppos = getField(i, 'PPOS');
+    const posName = POSITIONS[ppos] || `P${ppos}`;
+    const ovr = getField(i, 'POVR');
+    const li = document.createElement('li');
+    li.textContent = `${name} (${posName}) OVR:${ovr}`;
+    li.onclick = () => selectPlayer(i);
+    list.appendChild(li);
+  }
+}
+
+function setupEditorUI() {
+  const posSel = document.getElementById('editPos');
+  posSel.innerHTML = '';
+  POSITIONS.forEach((p, idx) => {
+    const opt = document.createElement('option');
+    opt.value = idx;
+    opt.textContent = p;
+    posSel.appendChild(opt);
+  });
+  const rfDiv = document.getElementById('ratingFields');
+  rfDiv.innerHTML = '';
+  RATING_FIELDS.forEach(([fname, label]) => {
+    if (!fields[fname]) return;
+    const div = document.createElement('div');
+    div.className = 'field-row';
+    div.innerHTML = `<label>${label}:</label><input type="number" id="edit_${fname}" min="0" max="31">`;
+    rfDiv.appendChild(div);
+  });
+}
+
+function selectIsoPlayer(idx) {
+  currentPlayer = idx;
+  window.isIsoMode = true;
+  const items = document.getElementById('playerList').children;
+  for (let i = 0; i < items.length; i++) {
+    items[i].classList.toggle('selected', i === idx);
+  }
+  document.getElementById('editFirst').value = '';
+  document.getElementById('editLast').value = '';
+  document.getElementById('editPos').value = getIsoField(idx, 'PPOS');
+  RATING_FIELDS.forEach(([fname, label]) => {
+    const el = document.getElementById('edit_' + fname);
+    if (el) el.value = getIsoField(idx, fname);
+  });
+  document.getElementById('editorForm').style.display = 'block';
+}
       li.textContent = `... and ${playerCount - 100} more (showing first 100)`;
       li.style.color = '#888';
       list.appendChild(li);
@@ -357,7 +599,7 @@ function selectPlayer(idx) {
   document.getElementById('editLast').value = last;
   document.getElementById('editPos').value = getField(idx, 'PPOS');
   
-  RATING_FIELDS.forEach(([fname]) => {
+  RATING_FIELDS.forEach(([fname, label]) => {
     const el = document.getElementById('edit_' + fname);
     if (el) el.value = getField(idx, fname);
   });
@@ -368,32 +610,85 @@ function selectPlayer(idx) {
 function applyChanges() {
   if (currentPlayer < 0) return;
   
-  const first = document.getElementById('editFirst').value;
-  const last = document.getElementById('editLast').value;
-  setPlayerName(currentPlayer, first, last);
+  const isIso = window.isIsoMode === true;
   
-  const pos = parseInt(document.getElementById('editPos').value);
-  setField(currentPlayer, 'PPOS', pos);
-  
-  RATING_FIELDS.forEach(([fname]) => {
-    const el = document.getElementById('edit_' + fname);
-    if (el && el.value !== '') {
-      setField(currentPlayer, fname, parseInt(el.value));
-    }
-  });
-  
-  // Refresh list item
-  const [nf, nl] = getPlayerName(currentPlayer);
-  const name = (nf + ' ' + nl).trim() || `Player ${currentPlayer}`;
-  const posName = POSITIONS[pos] || `P${pos}`;
-  const ovr = getField(currentPlayer, 'POVR');
-  const li = document.getElementById('playerList').children[currentPlayer];
-  if (li) li.textContent = `${name} (${posName}) OVR:${ovr}`;
+  if (isIso) {
+    // ISO mode: use iso field setters
+    const pos = parseInt(document.getElementById('editPos').value);
+    setIsoField(currentPlayer, 'PPOS', pos);
+    
+    RATING_FIELDS.forEach(([fname, label]) => {
+      const el = document.getElementById('edit_' + fname);
+      if (el && el.value !== '') {
+        setIsoField(currentPlayer, fname, parseInt(el.value));
+      }
+    });
+    
+    // Refresh list item
+    const posName = POSITIONS[pos] || `P${pos}`;
+    const ovr = getIsoField(currentPlayer, 'POVR');
+    const li = document.getElementById('playerList').children[currentPlayer];
+    if (li) li.textContent = `Player ${currentPlayer} (${posName}) OVR:${ovr}`;
+  } else {
+    // GCI mode
+    const first = document.getElementById('editFirst').value;
+    const last = document.getElementById('editLast').value;
+    setPlayerName(currentPlayer, first, last);
+    
+    const pos = parseInt(document.getElementById('editPos').value);
+    setField(currentPlayer, 'PPOS', pos);
+    
+    RATING_FIELDS.forEach(([fname, label]) => {
+      const el = document.getElementById('edit_' + fname);
+      if (el && el.value !== '') {
+        setField(currentPlayer, fname, parseInt(el.value));
+      }
+    });
+    
+    // Refresh list item
+    const [nf, nl] = getPlayerName(currentPlayer);
+    const name = (nf + ' ' + nl).trim() || `Player ${currentPlayer}`;
+    const posName = POSITIONS[pos] || `P${pos}`;
+    const ovr = getField(currentPlayer, 'POVR');
+    const li = document.getElementById('playerList').children[currentPlayer];
+    if (li) li.textContent = `${name} (${posName}) OVR:${ovr}`;
+  }
   
   document.getElementById('status').textContent = 'Changes applied (in memory). Download to save.';
 }
 
 function downloadGCI() {
+  const isIso = window.isIsoMode === true;
+  
+  if (isIso) {
+    // ISO mode: rebuild ISO with patched LEAGUE.DAT via Blob
+    if (!window.isoFile || !window.leagueData) return;
+    
+    const LEAGUE_OFF = 0x4E352D78;
+    const LEAGUE_SIZE = 2176504;
+    const isoFile = window.isoFile;
+    
+    status.textContent = 'Rebuilding ISO (this may take a moment)...';
+    
+    // Create new ISO: [0..LEAGUE_OFF) + modified LEAGUE.DAT + [LEAGUE_OFF+SIZE..end)
+    const part1 = isoFile.slice(0, LEAGUE_OFF);
+    const part2 = new Blob([window.leagueData]);
+    const part3 = isoFile.slice(LEAGUE_OFF + LEAGUE_SIZE);
+    
+    const newIso = new Blob([part1, part2, part3], {type: 'application/octet-stream'});
+    
+    const url = URL.createObjectURL(newIso);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ncaa05_patched.iso';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    
+    document.getElementById('status').textContent = 'Patched ISO downloaded!';
+    return;
+  }
+  
+  // GCI mode
   if (!gciData || !dbData) return;
   
   // Write DB back into GCI

@@ -39,17 +39,29 @@
 
 <div class="notice">
   <strong>Swap 3D Models</strong> (trey31 method)<br>
-  Load ISO → PLADATA.DAT loads automatically →<br>
+  Load ISO → select model archive →<br>
   tap two models to select A and B → swap → download patched ISO.<br><br>
   • Swaps entire model entries (no geometry decoding needed)<br>
-  • Same-size swaps are safest; different sizes also work<br>
-  • <strong>16 files at 1607 bytes</strong> = likely helmets/equipment<br>
-  • 100-200KB files = likely player bodies<br><br>
+  • Same-size swaps are safest; different sizes also work<br><br>
+  <strong>Archives:</strong><br>
+  • PLADATA.DAT: Player models & equipment (2,672 files)<br>
+  • UIS_MODL.DAT: Menu high-detail models (111 files)<br>
+  • FANDATA.DAT: Fan/crowd models (257 files)<br><br>
   Filter by size to find matching model slots.
 </div>
 
 <label for="fileInput" class="btn">Load ISO File</label>
 <input type="file" id="fileInput" accept=".iso" />
+
+<div id="datSection" style="display: none;">
+  <label style="font-size: 14px; color: #aaa;">Model Archive:</label>
+  <select id="datSelect" onchange="loadSelectedDat()">
+    <option value="">-- Select --</option>
+    <option value="PLADATA">PLADATA.DAT - Player Models (147MB)</option>
+    <option value="UIS_MODL">UIS_MODL.DAT - UI Models (76MB)</option>
+    <option value="FANDATA">FANDATA.DAT - Fan Models (2MB)</option>
+  </select>
+</div>
 
 <div id="status"></div>
 
@@ -74,10 +86,11 @@ const PLADATA_OFFSET = 0x0;  // Will be determined from FST
 const PLADATA_NAME = 'PLADATA.DAT';
 
 let isoFile = null;
-let plaData = null;      // Uint8Array of PLADATA.DAT
+let plaData = null;      // Uint8Array of model DAT
 let plaEntries = [];     // [{offset, length}]
-let plaStart = 0;        // ISO offset of PLADATA.DAT
+let plaStart = 0;        // ISO offset of DAT
 let plaSize = 0;         // Original size
+let plaName = '';        // DAT filename (e.g., 'PLADATA.DAT')
 let selectedA = -1;
 let selectedB = -1;
 let datGrew = false;
@@ -89,29 +102,36 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   
   isoFile = file;
   const status = document.getElementById('status');
-  status.textContent = 'Loading ISO and finding PLADATA.DAT...';
+  status.textContent = 'ISO loaded. Select a model archive.';
+  
+  document.getElementById('datSection').style.display = 'block';
+});
+
+async function loadSelectedDat() {
+  const datName = document.getElementById('datSelect').value;
+  if (!datName || !isoFile) return;
+  
+  const status = document.getElementById('status');
+  status.textContent = `Finding ${datName}.DAT...`;
   
   try {
-    // Read FST to find PLADATA.DAT
-    // FST is at 0x413700 based on earlier RE
+    // Read FST to find the DAT
     const FST_OFF = 0x413700;
-    const fstBlob = file.slice(FST_OFF, FST_OFF + 0x1000);
+    const fstBlob = isoFile.slice(FST_OFF, FST_OFF + 0x1000);
     const fstBuf = await fstBlob.arrayBuffer();
     const fst = new Uint8Array(fstBuf);
     
-    // Parse FST entries to find PLADATA.DAT
-    // FST format: [u32 type_name | u32 offset_or_parent | u32 size_or_next]
     const view = new DataView(fstBuf);
-    const numEntries = view.getUint32(8, false); // BE
+    const numEntries = view.getUint32(8, false);
     
     let found = false;
-    for (let i = 1; i < numEntries && i < 200; i++) {
+    const targetName = datName + '.DAT';
+    for (let i = 1; i < numEntries && i < 300; i++) {
       const entryOff = i * 12;
       const nameOff = view.getUint32(entryOff, false) & 0xFFFFFF;
       const fileOff = view.getUint32(entryOff + 4, false);
       const fileSize = view.getUint32(entryOff + 8, false);
       
-      // Get name from string table
       const strTabStart = numEntries * 12;
       let name = '';
       for (let j = 0; j < 32; j++) {
@@ -120,32 +140,33 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
         name += String.fromCharCode(c);
       }
       
-      if (name === 'PLADATA.DAT') {
+      if (name === targetName) {
         plaStart = fileOff;
         plaSize = fileSize;
+        plaName = targetName;
         found = true;
         break;
       }
     }
     
     if (!found) {
-      // Fallback: try known offset from earlier RE
-      // PLADATA.DAT is a large file, search by TERF magic
-      status.textContent = 'PLADATA.DAT not in FST, scanning...';
-      // For now, error out
-      throw new Error('PLADATA.DAT not found in FST. This ISO may have a different layout.');
+      throw new Error(`${targetName} not found in FST.`);
     }
     
-    status.textContent = `Found PLADATA.DAT at 0x${plaStart.toString(16)}, ${(plaSize/1024/1024).toFixed(1)}MB. Loading...`;
+    status.textContent = `Found ${targetName} at 0x${plaStart.toString(16)}, ${(plaSize/1024/1024).toFixed(1)}MB. Loading...`;
     
-    // Load PLADATA.DAT
-    const plaBlob = file.slice(plaStart, plaStart + plaSize);
+    const plaBlob = isoFile.slice(plaStart, plaStart + plaSize);
     const plaBuf = await plaBlob.arrayBuffer();
     plaData = new Uint8Array(plaBuf);
     
-    // Parse TERF
     plaEntries = parseTerf(plaData);
-    status.textContent = `Loaded ${plaEntries.length} models. Select two to swap.`;
+    status.textContent = `Loaded ${plaEntries.length} models from ${targetName}. Select two to swap.`;
+    
+    // Reset selection
+    selectedA = -1;
+    selectedB = -1;
+    datGrew = false;
+    updateSwapUI();
     
     document.getElementById('modelSection').style.display = 'block';
     buildSizeFilter();
@@ -155,7 +176,7 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
     status.textContent = 'Error: ' + err.message;
     console.error(err);
   }
-});
+}
 
 // === TERF Parser (shared with texture.html) ===
 function parseTerf(data) {
@@ -445,11 +466,11 @@ async function downloadPatchedISO() {
       const fstBuf = await fstBlob.arrayBuffer();
       const fst = new Uint8Array(fstBuf);
       
-      // Find and update PLADATA.DAT entry
+      // Find and update DAT entry
       const view = new DataView(fstBuf);
       const numEntries = view.getUint32(8, false);
       
-      for (let i = 1; i < numEntries && i < 200; i++) {
+      for (let i = 1; i < numEntries && i < 300; i++) {
         const entryOff = i * 12;
         const nameOff = view.getUint32(entryOff, false) & 0xFFFFFF;
         const strTabStart = numEntries * 12;
@@ -460,7 +481,7 @@ async function downloadPatchedISO() {
           name += String.fromCharCode(c);
         }
         
-        if (name === 'PLADATA.DAT') {
+        if (name === plaName) {
           // Update offset (point to end of ISO) and size
           const newOff = isoFile.size;
           view.setUint32(entryOff + 4, newOff, false);
@@ -475,7 +496,7 @@ async function downloadPatchedISO() {
       const part4 = new Blob([plaData]);
       
       newIso = new Blob([part1, part2, part3, part4], {type: 'application/octet-stream'});
-      status.textContent = `ISO rebuilt! PLADATA.DAT appended (${(plaData.length/1024/1024).toFixed(1)}MB)`;
+      status.textContent = `ISO rebuilt! ${plaName} appended (${(plaData.length/1024/1024).toFixed(1)}MB)`;
     } else {
       // Same size: in-place
       const part1 = isoFile.slice(0, plaStart);

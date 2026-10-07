@@ -2,7 +2,13 @@
 NCAA Football 2005 (GameCube) - Model Swap Tool
 
 Based on trey31's Madden 08 PC mesh-swap method:
-Swap entire model entries within PLADATA.DAT without decoding geometry.
+Swap entire model entries within DAT archives without decoding geometry.
+
+Supported archives:
+  PLADATA.DAT  (147MB, 2672 files) - Player models/equipment
+  UIS_MODL.DAT ( 76MB,  111 files) - UI/menu high-detail models
+  FANDATA.DAT  (  2MB,  257 files) - Fan/crowd models
+  STADATA.DAT  ( 16MB,    ? files) - Stadium data
 
 Usage:
     python3 model_swap.py PLADATA.DAT --swap 2117 2118 -o PLADATA_SWAPPED.DAT

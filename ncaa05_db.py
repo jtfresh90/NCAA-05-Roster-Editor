@@ -28,6 +28,60 @@ GAME_ID = "GCUE69"
 LEAGUE_DAT_ISO_OFF = 0x4E352D78
 LEAGUE_DAT_SIZE = 2176504
 
+
+def find_iso_file(iso_path, target_name):
+    """
+    Locate a file inside a GameCube ISO via the disc header + FST.
+    Works with any dump layout (raw, NKit, etc.) — no hardcoded offsets.
+    Returns (offset, size). Raises ValueError with a clear message on failure.
+    """
+    target = target_name.upper()
+    with open(iso_path, 'rb') as f:
+        # Disc header: game ID at 0x00, FST offset at 0x424, FST size at 0x428
+        f.seek(0)
+        game_id = f.read(6).decode('ascii', errors='replace')
+        f.seek(0x424)
+        fst_off, fst_size = struct.unpack('>II', f.read(8))
+
+        if not fst_off or not fst_size or fst_size > 0x100000:
+            raise ValueError(
+                f"Bad FST header (off=0x{fst_off:x}, size=0x{fst_size:x}). "
+                "Is this a GameCube ISO?"
+            )
+
+        f.seek(fst_off)
+        fst = f.read(fst_size)
+        num_entries = struct.unpack('>I', fst[8:12])[0]
+        if num_entries > 10000:
+            raise ValueError("FST looks corrupt (too many entries).")
+
+        str_tab = num_entries * 12
+        for i in range(1, num_entries):
+            e_off = i * 12
+            if fst[e_off] == 1:  # directory
+                continue
+            name_off = (fst[e_off + 1] << 16) | (fst[e_off + 2] << 8) | fst[e_off + 3]
+            end = fst.index(b'\x00', str_tab + name_off, str_tab + name_off + 64)
+            name = fst[str_tab + name_off:end].decode('ascii', errors='replace')
+            if name.upper() == target:
+                offset, size = struct.unpack('>II', fst[e_off + 4:e_off + 12])
+                return offset, size, game_id
+
+    raise ValueError(f"{target_name} not found in ISO file table.")
+
+
+def extract_league_dat_from_iso(iso_path):
+    """Extract LEAGUE.DAT bytes from a GameCube ISO. Returns bytes."""
+    offset, size, game_id = find_iso_file(iso_path, 'LEAGUE.DAT')
+    if game_id != GAME_ID:
+        print(f"Warning: game ID is {game_id} (expected {GAME_ID})")
+    with open(iso_path, 'rb') as f:
+        f.seek(offset)
+        data = f.read(size)
+    if b'YALP' not in data[:0x10000]:
+        raise ValueError("LEAGUE.DAT has no YALP sections — wrong file or corrupted ISO.")
+    return data
+
 # DB magic
 DB_MAGIC = b'DB\x00'
 
@@ -62,10 +116,14 @@ class EADatabase:
 def extract_team_names(league_dat_path):
     """
     Extract team names from LEAGUE.DAT.
+    Accepts a file path or raw bytes.
     Returns list of team names.
     """
-    with open(league_dat_path, 'rb') as f:
-        data = f.read()
+    if isinstance(league_dat_path, (bytes, bytearray)):
+        data = bytes(league_dat_path)
+    else:
+        with open(league_dat_path, 'rb') as f:
+            data = f.read()
     
     # Pattern: \x04\xff<Name>!
     pattern = rb'\x04\xff([A-Za-z .&\'-]+?)!'

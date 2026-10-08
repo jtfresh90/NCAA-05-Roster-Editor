@@ -38,7 +38,7 @@
 </div>
 
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">Roster Editor v1.3.0</div>
+<div class="subtitle">Roster Editor v1.3.1</div>
 
 <div class="notice">
   <strong>Load a GCI save or ISO</strong><br>
@@ -255,8 +255,11 @@ function setPlayerName(idx, first, last) {
 
 // === GameCube ISO helpers ===
 // Locate a file in the ISO via the disc header + FST (no hardcoded offsets)
-async function findIsoFile(file, targetName) {
+async function findIsoFile(file, targetName, status) {
+  const setStatus = (msg) => { if (status) status.textContent = msg; };
+  
   // Disc header: FST offset at 0x424, FST size at 0x428 (both BE u32)
+  setStatus('Reading disc header...');
   const hdrBlob = file.slice(0, 0x42C);
   const hdrBuf = await hdrBlob.arrayBuffer();
   const hv = new DataView(hdrBuf);
@@ -264,6 +267,8 @@ async function findIsoFile(file, targetName) {
   const gameId = String.fromCharCode(hdrBuf[0], hdrBuf[1], hdrBuf[2], hdrBuf[3], hdrBuf[4], hdrBuf[5]);
   const fstOff = hv.getUint32(0x424, false);
   const fstSize = hv.getUint32(0x428, false);
+  
+  setStatus(`Game ID: ${gameId}, FST at 0x${fstOff.toString(16)}...`);
   
   if (!fstOff || !fstSize || fstSize > 0x100000) {
     throw new Error(`Bad FST header (off=0x${fstOff.toString(16)}, size=0x${fstSize.toString(16)}). Is this a GameCube ISO?`);
@@ -318,23 +323,28 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   try {
     if (isIso) {
       // Find LEAGUE.DAT dynamically via FST (works with any dump layout)
-      const loc = await findIsoFile(file, 'LEAGUE.DAT');
+      status.textContent = 'Reading disc header...';
+      const loc = await findIsoFile(file, 'LEAGUE.DAT', status);
       const LEAGUE_OFF = loc.offset;
       const LEAGUE_SIZE = loc.size;
       
       if (loc.gameId !== 'GCUE69') {
         status.textContent = `Warning: game ID is ${loc.gameId} (expected GCUE69). Trying anyway...`;
+        await new Promise(r => setTimeout(r, 500));
       }
       
-      status.textContent = `Found LEAGUE.DAT (${(LEAGUE_SIZE/1024/1024).toFixed(1)}MB). Loading...`;
+      status.textContent = `LEAGUE.DAT at 0x${LEAGUE_OFF.toString(16)} (${(LEAGUE_SIZE/1024/1024).toFixed(1)}MB). Loading...`;
       const blob = file.slice(LEAGUE_OFF, LEAGUE_OFF + LEAGUE_SIZE);
       const buffer = await blob.arrayBuffer();
       const leagueData = new Uint8Array(buffer);
       
       // Validate: must contain YALP magic
-      if (findBytes(leagueData, [0x59, 0x41, 0x4C, 0x50], 0) < 0) {
+      status.textContent = 'Validating LEAGUE.DAT...';
+      const yalpPos = findBytes(leagueData, [0x59, 0x41, 0x4C, 0x50], 0);
+      if (yalpPos < 0) {
         throw new Error('LEAGUE.DAT has no YALP sections — wrong file or corrupted ISO.');
       }
+      status.textContent = `Found roster data. Parsing sections...`;
       
       // Store ISO file reference and LEAGUE.DAT location for rebuilding
       window.isoFile = file;

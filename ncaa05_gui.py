@@ -56,9 +56,18 @@ class TeamBrowser(QMainWindow):
             if path.lower().endswith('.iso'):
                 self.status_label.setText("Locating LEAGUE.DAT in ISO...")
                 QApplication.processEvents()
+                from ncaa05_db import find_iso_file
+                iso_off, iso_size, game_id = find_iso_file(path, 'LEAGUE.DAT')
                 data = extract_league_dat_from_iso(path)
                 teams = extract_team_names(data)
                 self.status_label.setText(f"Loaded {len(teams)} teams from ISO: {Path(path).name}")
+                QMessageBox.information(
+                    self, "ISO Details",
+                    f"Game ID: {game_id}\n"
+                    f"LEAGUE.DAT at 0x{iso_off:x}, {iso_size} bytes\n"
+                    f"Read {len(data)} bytes, found {len(teams)} teams\n\n"
+                    f"If team count looks wrong, screenshot this and report it."
+                )
             else:
                 teams = extract_team_names(path)
                 self.status_label.setText(f"Loaded {len(teams)} teams from {Path(path).name}")

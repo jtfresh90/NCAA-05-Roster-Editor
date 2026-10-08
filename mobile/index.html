@@ -253,6 +253,57 @@ function setPlayerName(idx, first, last) {
   }
 }
 
+// === GameCube ISO helpers ===
+// Locate a file in the ISO via the disc header + FST (no hardcoded offsets)
+async function findIsoFile(file, targetName) {
+  // Disc header: FST offset at 0x424, FST size at 0x428 (both BE u32)
+  const hdrBlob = file.slice(0, 0x42C);
+  const hdrBuf = await hdrBlob.arrayBuffer();
+  const hv = new DataView(hdrBuf);
+  
+  const gameId = String.fromCharCode(hdrBuf[0], hdrBuf[1], hdrBuf[2], hdrBuf[3], hdrBuf[4], hdrBuf[5]);
+  const fstOff = hv.getUint32(0x424, false);
+  const fstSize = hv.getUint32(0x428, false);
+  
+  if (!fstOff || !fstSize || fstSize > 0x100000) {
+    throw new Error(`Bad FST header (off=0x${fstOff.toString(16)}, size=0x${fstSize.toString(16)}). Is this a GameCube ISO?`);
+  }
+  
+  const fstBlob = file.slice(fstOff, fstOff + fstSize);
+  const fstBuf = await fstBlob.arrayBuffer();
+  const fst = new Uint8Array(fstBuf);
+  const fv = new DataView(fstBuf);
+  const numEntries = fv.getUint32(8, false);
+  
+  if (numEntries > 10000) {
+    throw new Error('FST looks corrupt (too many entries). Is this a GameCube ISO?');
+  }
+  
+  const strTab = numEntries * 12;
+  const target = targetName.toUpperCase();
+  
+  for (let i = 1; i < numEntries; i++) {
+    const eOff = i * 12;
+    const isDir = (fst[eOff] & 0x01) === 1;
+    if (isDir) continue;
+    const nameOff = (fst[eOff + 1] << 16) | (fst[eOff + 2] << 8) | fst[eOff + 3];
+    let name = '';
+    for (let j = 0; j < 64; j++) {
+      const c = fst[strTab + nameOff + j];
+      if (!c) break;
+      name += String.fromCharCode(c);
+    }
+    if (name.toUpperCase() === target) {
+      return {
+        offset: fv.getUint32(eOff + 4, false),
+        size: fv.getUint32(eOff + 8, false),
+        gameId: gameId
+      };
+    }
+  }
+  throw new Error(`${targetName} not found in ISO file table.`);
+}
+
 // === UI ===
 document.getElementById('fileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -262,20 +313,35 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
   const fileName = file.name.toLowerCase();
   const isIso = fileName.endsWith('.iso');
   
-  status.textContent = isIso ? 'Loading ISO (slicing LEAGUE.DAT)...' : 'Loading GCI...';
+  status.textContent = isIso ? 'Locating LEAGUE.DAT in ISO...' : 'Loading GCI...';
   
   try {
     if (isIso) {
-      // ISO: extract LEAGUE.DAT via slice (2MB at 0x4E352D78)
-      const LEAGUE_OFF = 0x4E352D78;
-      const LEAGUE_SIZE = 2176504;
+      // Find LEAGUE.DAT dynamically via FST (works with any dump layout)
+      const loc = await findIsoFile(file, 'LEAGUE.DAT');
+      const LEAGUE_OFF = loc.offset;
+      const LEAGUE_SIZE = loc.size;
+      
+      if (loc.gameId !== 'GCUE69') {
+        status.textContent = `Warning: game ID is ${loc.gameId} (expected GCUE69). Trying anyway...`;
+      }
+      
+      status.textContent = `Found LEAGUE.DAT (${(LEAGUE_SIZE/1024/1024).toFixed(1)}MB). Loading...`;
       const blob = file.slice(LEAGUE_OFF, LEAGUE_OFF + LEAGUE_SIZE);
       const buffer = await blob.arrayBuffer();
       const leagueData = new Uint8Array(buffer);
       
-      // Store ISO file reference for rebuilding
+      // Validate: must contain YALP magic
+      if (findBytes(leagueData, [0x59, 0x41, 0x4C, 0x50], 0) < 0) {
+        throw new Error('LEAGUE.DAT has no YALP sections — wrong file or corrupted ISO.');
+      }
+      
+      // Store ISO file reference and LEAGUE.DAT location for rebuilding
       window.isoFile = file;
       window.leagueData = leagueData;
+      window.leagueOff = LEAGUE_OFF;
+      window.leagueSize = LEAGUE_SIZE;
+      window.isIsoMode = true;
       
       // Parse YALP sections (find all, use first schema)
       status.textContent = 'Parsing 421 YALP sections...';
@@ -556,39 +622,6 @@ function selectIsoPlayer(idx) {
   });
   document.getElementById('editorForm').style.display = 'block';
 }
-      li.textContent = `... and ${playerCount - 100} more (showing first 100)`;
-      li.style.color = '#888';
-      list.appendChild(li);
-    }
-    
-    document.getElementById('playerSection').style.display = 'block';
-    
-    // Setup position dropdown
-    const posSel = document.getElementById('editPos');
-    posSel.innerHTML = '';
-    POSITIONS.forEach((p, idx) => {
-      const opt = document.createElement('option');
-      opt.value = idx;
-      opt.textContent = p;
-      posSel.appendChild(opt);
-    });
-    
-    // Setup rating fields
-    const rfDiv = document.getElementById('ratingFields');
-    rfDiv.innerHTML = '';
-    RATING_FIELDS.forEach(([fname, label]) => {
-      if (!fields[fname]) return;
-      const div = document.createElement('div');
-      div.className = 'field-row';
-      div.innerHTML = `<label>${label}:</label><input type="number" id="edit_${fname}" min="0" max="31">`;
-      rfDiv.appendChild(div);
-    });
-    
-  } catch (err) {
-    status.textContent = 'Error: ' + err.message;
-    console.error(err);
-  }
-});
 
 function selectPlayer(idx) {
   currentPlayer = idx;
@@ -670,8 +703,9 @@ function downloadGCI() {
     // ISO mode: rebuild ISO with patched LEAGUE.DAT via Blob
     if (!window.isoFile || !window.leagueData) return;
     
-    const LEAGUE_OFF = 0x4E352D78;
-    const LEAGUE_SIZE = 2176504;
+    // Use the dynamically-located offset/size (falls back to known values)
+    const LEAGUE_OFF = window.leagueOff || 0x4E352D78;
+    const LEAGUE_SIZE = window.leagueSize || 2176504;
     const isoFile = window.isoFile;
     
     status.textContent = 'Rebuilding ISO (this may take a moment)...';

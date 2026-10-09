@@ -78,6 +78,12 @@ def extract_league_dat_from_iso(iso_path):
     with open(iso_path, 'rb') as f:
         f.seek(offset)
         data = f.read(size)
+    if len(data) != size:
+        raise ValueError(
+            f"ISO file appears truncated: FST says {size} bytes for LEAGUE.DAT "
+            f"but only {len(data)} readable. Your ISO download is incomplete — "
+            f"re-download it and try again."
+        )
     if b'YALP' not in data[:0x10000]:
         raise ValueError("LEAGUE.DAT has no YALP sections — wrong file or corrupted ISO.")
     return data

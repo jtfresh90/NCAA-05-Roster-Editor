@@ -76,6 +76,7 @@
   </div>
   
   <button class="btn btn-green" id="downloadBtn" onclick="downloadGCI()">Download Modified GCI</button>
+  <button class="btn" id="backupBtn" onclick="downloadBackup()">⬇️ Download Original (backup)</button>
 </div>
 
 <script>
@@ -136,6 +137,7 @@ function gcToPc(gc) { return gc.split('').reverse().join(''); }
 
 // === Global state ===
 let gciData = null;      // Full GCI file
+let gciOriginal = null;  // Pristine copy for backup download
 let dbData = null;       // Extracted DB (0x730E0 bytes)
 let fields = {};         // {pcName: {size, bit}}
 let playerCount = 0;
@@ -369,6 +371,7 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
       // GCI: existing logic
       const buffer = await file.arrayBuffer();
       gciData = new Uint8Array(buffer);
+      gciOriginal = gciData.slice();  // Keep a pristine copy for backup download
       
       // Find DB marker
       let dbOff = -1;
@@ -561,39 +564,53 @@ function setIsoField(globalIdx, fname, val) {
 function populateIsoPlayerList() {
   const list = document.getElementById('playerList');
   list.innerHTML = '';
-  const showCount = Math.min(isoPlayerCount, 100);
-  for (let i = 0; i < showCount; i++) {
+  // Full player list (no artificial 100-player cap). High practical limit
+  // keeps the DOM usable on mobile; matches the desktop editor's approach.
+  const displayLimit = Math.min(isoPlayerCount, 8000);
+  for (let i = 0; i < displayLimit; i++) {
     const ppos = getIsoField(i, 'PPOS');
     const posName = POSITIONS[ppos] || `P${ppos}`;
     const ovr = getIsoField(i, 'POVR');
     const li = document.createElement('li');
-    li.textContent = `Player ${i} (${posName}) OVR:${ovr}`;
+    li.textContent = `[${i}] Player ${i} (${posName}) OVR:${ovr}`;
     li.onclick = () => selectIsoPlayer(i);
     list.appendChild(li);
   }
-  if (isoPlayerCount > 100) {
+  if (isoPlayerCount > displayLimit) {
     const li = document.createElement('li');
-    li.textContent = `... and ${isoPlayerCount - 100} more`;
+    li.textContent = `... and ${isoPlayerCount - displayLimit} more (UI safety cap)`;
     li.style.color = '#888';
     list.appendChild(li);
   }
+  const st = document.getElementById('status');
+  if (st) st.textContent += `  |  Showing ${displayLimit} players`;
 }
 
 function populateGciPlayerList() {
   const list = document.getElementById('playerList');
   list.innerHTML = '';
-  const showCount = Math.min(playerCount, 100);
-  for (let i = 0; i < showCount; i++) {
+  // Full player list (no artificial 100-player cap). High practical limit
+  // keeps the DOM usable on mobile; matches the desktop editor's approach.
+  const displayLimit = Math.min(playerCount, 8000);
+  for (let i = 0; i < displayLimit; i++) {
     const [first, last] = getPlayerName(i);
     const name = (first + ' ' + last).trim() || `Player ${i}`;
     const ppos = getField(i, 'PPOS');
     const posName = POSITIONS[ppos] || `P${ppos}`;
     const ovr = getField(i, 'POVR');
     const li = document.createElement('li');
-    li.textContent = `${name} (${posName}) OVR:${ovr}`;
+    li.textContent = `[${i}] ${name} (${posName}) OVR:${ovr}`;
     li.onclick = () => selectPlayer(i);
     list.appendChild(li);
   }
+  if (playerCount > displayLimit) {
+    const li = document.createElement('li');
+    li.textContent = `... and ${playerCount - displayLimit} more (UI safety cap)`;
+    li.style.color = '#888';
+    list.appendChild(li);
+  }
+  const st = document.getElementById('status');
+  if (st) st.textContent += `  |  Showing ${displayLimit} players`;
 }
 
 function setupEditorUI() {
@@ -677,7 +694,7 @@ function applyChanges() {
     const posName = POSITIONS[pos] || `P${pos}`;
     const ovr = getIsoField(currentPlayer, 'POVR');
     const li = document.getElementById('playerList').children[currentPlayer];
-    if (li) li.textContent = `Player ${currentPlayer} (${posName}) OVR:${ovr}`;
+    if (li) li.textContent = `[${currentPlayer}] Player ${currentPlayer} (${posName}) OVR:${ovr}`;
   } else {
     // GCI mode
     const first = document.getElementById('editFirst').value;
@@ -700,10 +717,32 @@ function applyChanges() {
     const posName = POSITIONS[pos] || `P${pos}`;
     const ovr = getField(currentPlayer, 'POVR');
     const li = document.getElementById('playerList').children[currentPlayer];
-    if (li) li.textContent = `${name} (${posName}) OVR:${ovr}`;
+    if (li) li.textContent = `[${currentPlayer}] ${name} (${posName}) OVR:${ovr}`;
   }
   
   document.getElementById('status').textContent = 'Changes applied (in memory). Download to save.';
+}
+
+function downloadBackup() {
+  // Save-with-backup: download the pristine original file (before any edits).
+  const isIso = window.isIsoMode === true;
+  let blob = null, name = null;
+  if (isIso) {
+    if (!window.isoFile) return;
+    blob = window.isoFile;  // never mutated; patched ISO is built as a new Blob
+    name = 'ncaa05_original_backup.iso';
+  } else {
+    if (!gciOriginal) return;
+    blob = new Blob([gciOriginal], {type: 'application/octet-stream'});
+    name = 'ncaa05_original_backup.gci';
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  document.getElementById('status').textContent = 'Original backed up: ' + name;
 }
 
 function downloadGCI() {

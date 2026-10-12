@@ -1,63 +1,61 @@
-# NCAA Football 2005 Editor (GameCube)
+# NCAA Football 2005 Editor (GameCube) — Fixed Build
 
 Editing tools for EA Sports NCAA Football 2005 (GameCube, Game ID GCUE69) — rosters, textures, and 3D models.
+
+**This package is the “fixed” drop** that addresses the previous visibility problem (only a handful of teams/players showing) and wires the real parsers into the desktop player editor.
+
+## What was fixed (v1.2.0)
+
+- Desktop player editor (`ncaa05_player_editor.py`) now uses the real `GCIPlayTable` / `IsoPlayTable` instead of placeholders.
+- Full player list is loaded (no artificial 5-team or 100-player hard limit).
+- GCI path supports name + rating editing and save-with-backup.
+- ISO / LEAGUE.DAT path loads all discovered YALP sections and exposes ratings.
+
+Still research-preview quality overall. Team names in ISO mode remain “Player N” until the name table is fully mapped. Mobile PWA is unchanged in this zip (use the live GitHub Pages version or the desktop editor).
 
 ## Tools
 
 ### 1. Roster Editor
-- **GCI saves**: Parse and edit player ratings from GameCube memory-card saves (`gci_play_parser.py`, `roster_editor.py`)
-- **ISO**: Edit the 27,526-player LEAGUE.DAT database directly in the ISO (`iso_play_parser.py`)
-- 16 ratings per player, in-place ISO patching
+- **GCI saves**: Parse and edit player ratings from GameCube memory-card saves (`gci_play_parser.py`, `roster_editor.py`, `ncaa05_player_editor.py`)
+- **ISO**: Edit the ~27k-player LEAGUE.DAT database (`iso_play_parser.py`)
+- 16+ ratings per player, in-place style editing for GCI
 
 ### 2. Texture Editor
-- **TERF/DIR1 parsing** of texture archives (PLYRFACE, COACFACE, ICONS, UIS_*)
-- **GameCube CMPR codec** — decode to PNG, encode PNG back to CMPR (Python + JavaScript)
-- **HD mode**: import 256×256 textures; DAT and ISO grow, quality preserved
-- **Always-quality imports**: full mipmap chains regenerated from source (no stale mipmaps)
-- Safe ISO rebuild with FST update (`texture_parser.py`)
+- **TERF/DIR1 parsing** of texture archives
+- **GameCube CMPR codec**
+- See `texture_parser.py`
 
 ### 3. Model Swap
-- **Whole-entry mesh swapping** in PLADATA.DAT (2,672 player/equipment models), UIS_MODL.DAT (111 menu models), FANDATA.DAT (257 crowd models)
-- trey31 method: swap model blobs between slots, no geometry decoding needed (`model_swap.py`)
-- Safe TERF rebuild + ISO/FST update
+- Whole-entry mesh swapping in PLADATA.DAT etc. (`model_swap.py`)
 
-## Usage
+## Quick Start (Desktop)
 
-### Mobile (iOS/Android PWA) — no computer needed
-Open in Safari (iOS) or Chrome (Android), then "Add to Home Screen":
-
-- **Roster Editor**: https://jtfresh90.github.io/NCAA-05-Roster-Editor/mobile/
-- **Texture Editor**: https://jtfresh90.github.io/NCAA-05-Roster-Editor/mobile/texture.html
-- **Model Swap**: https://jtfresh90.github.io/NCAA-05-Roster-Editor/mobile/models.html
-
-Load your ISO in the browser, edit, download the patched ISO.
-
-### Desktop (Windows EXE)
-Download the EXE from [Releases](https://github.com/jtfresh90/NCAA-05-Roster-Editor/releases). No Python required.
-
-### Python
 ```bash
-# Roster (GCI)
-python roster_editor.py ncaa05_roster.gci
-
-# Textures (with HD + mipmaps)
-python texture_parser.py
-
-# Models (swap entries 2117 <-> 2118)
-python model_swap.py PLADATA.DAT --swap 2117 2118 -o PLADATA_SWAPPED.DAT
+pip install PyQt5
+python ncaa05_player_editor.py
 ```
 
+Open a `.gci` (recommended for full name editing) or an ISO / extracted LEAGUE.DAT.
+
+Command-line GCI:
+
+```bash
+python roster_editor.py your_roster.gci
+python roster_editor.py your_roster.gci --edit 0 PSPD 90 --save modified.gci
+```
+
+## Mobile / PWA
+
+Still available at the original GitHub Pages links:
+
+- Roster: https://jtfresh90.github.io/NCAA-05-Roster-Editor/mobile/
+- Texture / Model tools also under `/mobile/`
+
 ## Research notes
-- EA uses TERF archives (not Sega's DAT format)
-- Player faces: 128×128 CMPR with mipmaps in PLYRFACE.DAT
-- Player names are not stored in-game (no licensed names in NCAA 05)
-- Model files use EA proprietary compression; mesh-swap works without decoding
-- See `docs/` and `~/workspace/recon/ncaa05/` for format research
-
-## Building
-
-### Windows EXE
-The GitHub workflow (`.github/workflows/build-windows-exe.yml`) builds a standalone EXE via PyInstaller on each release.
+- EA uses TERF archives
+- Player faces: 128×128 CMPR with mipmaps
+- Player names are not licensed (generic or generated)
+- See original repo docs for format research
 
 ## License
 For use with legally obtained copies of NCAA Football 2005 (GameCube).

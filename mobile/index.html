@@ -38,7 +38,7 @@
 </div>
 
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">Roster Editor v1.3.1</div>
+<div class="subtitle">Roster Editor v1.3.2</div>
 
 <div class="notice">
   <strong>Load a GCI save or ISO</strong><br>
@@ -358,6 +358,9 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
       // Parse YALP sections (find all, use first schema)
       status.textContent = 'Parsing 421 YALP sections...';
       await parseIsoLeague(leagueData);
+      if (isoSections.length === 0) {
+        throw new Error('No PLAY sections could be parsed from LEAGUE.DAT — the ISO may be truncated or from a different game.');
+      }
       
       status.textContent = `Loaded ISO: ${isoPlayerCount} players across ${isoSections.length} teams`;
       document.getElementById('infoBox').innerHTML = 
@@ -452,15 +455,29 @@ async function parseIsoLeague(leagueData) {
       const savedDb = dbData;
       dbData = leagueData; // Temporarily set for parseSchema
       const savedOff = PLAY_SCHEMA_OFFSET;
-      // We need a version that takes offset - for now, just count fields
+      // We need a version that takes offset - for now, just count fields.
+      // This walk MUST use the exact same rules as parseSchema() (and the
+      // desktop parser): entry-start separators advance 3, and an entry
+      // whose bit-offset bytes are the separator (21 00 04 at +12) is a
+      // 15-byte separator entry, not a field. Missing the +12 rule desyncs
+      // the walk by one byte at the ~30th field of every PLAY schema, so
+      // nearly every section failed the 80-90 field check and the app
+      // reported only 5 "teams".
       let fieldCount = 0;
       let off = schemaOff;
       while (off + 16 <= leagueData.length && fieldCount < 100) {
-        if (leagueData[off] === 0x21 && leagueData[off+1] === 0x00) { off += 3; continue; }
+        if (leagueData[off] === 0x21 && leagueData[off+1] === 0x00 && leagueData[off+2] === 0x04) { off += 3; continue; }
         const name = String.fromCharCode(leagueData[off], leagueData[off+1], leagueData[off+2], leagueData[off+3]);
         if (!/^[A-Za-z0-9_]{4}$/.test(name)) break;
-        const size = (leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7];
-        if (size > 5000) break;
+        // >>> 0: JS bitwise ops are signed 32-bit; without it a value with
+        // the top bit set (e.g. the end-of-schema marker entry) reads as
+        // negative, slips past the > checks, and shifts recordsOffset.
+        const size = ((leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7]) >>> 0;
+        const ftype = ((leagueData[off+8]<<24)|(leagueData[off+9]<<16)|(leagueData[off+10]<<8)|leagueData[off+11]) >>> 0;
+        if (size > 5000 || ftype > 20) break;
+        if (leagueData[off+12] === 0x21 && leagueData[off+13] === 0x00 && leagueData[off+14] === 0x04) { off += 15; continue; }
+        const bit = ((leagueData[off+12]<<24)|(leagueData[off+13]<<16)|(leagueData[off+14]<<8)|leagueData[off+15]) >>> 0;
+        if (bit > 10000) break;
         off += 16;
         fieldCount++;
         if (off - schemaOff > 2000) break;
@@ -492,10 +509,11 @@ async function parseIsoLeague(leagueData) {
   isoPlayerCount = 0;
   for (let si = 0; si < isoSections.length; si++) {
     const sec = isoSections[si];
-    // Estimate: section size / 52 bytes per record, cap at 80
+    // Estimate: section size / 52 bytes per record, cap at 100
+    // (same cap as the desktop parser, so player indices line up)
     const nextOff = (si + 1 < isoSections.length) ? isoSections[si+1].offset : leagueData.length;
     const avail = nextOff - sec.recordsOffset;
-    const count = Math.min(Math.floor(avail / 52), 80);
+    const count = Math.min(Math.floor(avail / 52), 100);
     for (let li = 0; li < count; li++) {
       isoPlayerIndex.push({sectionIdx: si, localIdx: li});
     }
@@ -518,11 +536,11 @@ async function parseIsoLeague(leagueData) {
       const nameBytes = [leagueData[off], leagueData[off+1], leagueData[off+2], leagueData[off+3]];
       const name = String.fromCharCode(...nameBytes);
       if (!/^[A-Za-z0-9_]{4}$/.test(name)) break;
-      const size = (leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7];
-      const ftype = (leagueData[off+8]<<24)|(leagueData[off+9]<<16)|(leagueData[off+10]<<8)|leagueData[off+11];
+      const size = ((leagueData[off+4]<<24)|(leagueData[off+5]<<16)|(leagueData[off+6]<<8)|leagueData[off+7]) >>> 0;
+      const ftype = ((leagueData[off+8]<<24)|(leagueData[off+9]<<16)|(leagueData[off+10]<<8)|leagueData[off+11]) >>> 0;
       if (size > 5000 || ftype > 20) break;
       if (leagueData[off+12] === 0x21) { off += 15; continue; }
-      const bit = (leagueData[off+12]<<24)|(leagueData[off+13]<<16)|(leagueData[off+14]<<8)|leagueData[off+15];
+      const bit = ((leagueData[off+12]<<24)|(leagueData[off+13]<<16)|(leagueData[off+14]<<8)|leagueData[off+15]) >>> 0;
       if (bit > 10000) break;
       fields[gcToPc(name)] = {size, bit};
       off += 16;

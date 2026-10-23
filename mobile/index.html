@@ -38,7 +38,7 @@
 </div>
 
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">Roster Editor v1.3.2</div>
+<div class="subtitle">Roster Editor v1.3.3</div>
 
 <div class="notice">
   <strong>Load a GCI save or ISO</strong><br>
@@ -579,13 +579,41 @@ function setIsoField(globalIdx, fname, val) {
   setBits(window.leagueData, recOff, f.bit, f.size, val);
 }
 
+// Player lists render in chunks: the first chunk paints fast on mobile,
+// and a tappable "Show more" row appends the next chunk until EVERY
+// player is reachable. The previous flat 8,000-row cap left most of the
+// ISO database (27,526 players) impossible to select or edit.
+const PLAYER_LIST_CHUNK = 2000;
+let isoRenderedCount = 0;
+let gciRenderedCount = 0;
+let isoMoreRow = null;
+let gciMoreRow = null;
+
+function updateShowingCount(rendered, total) {
+  const st = document.getElementById('status');
+  if (!st) return;
+  let span = document.getElementById('showingCount');
+  if (!span) {
+    span = document.createElement('span');
+    span.id = 'showingCount';
+    st.appendChild(span);
+  }
+  span.textContent = `  |  Showing ${rendered} of ${total} players`;
+}
+
 function populateIsoPlayerList() {
   const list = document.getElementById('playerList');
   list.innerHTML = '';
-  // Full player list (no artificial 100-player cap). High practical limit
-  // keeps the DOM usable on mobile; matches the desktop editor's approach.
-  const displayLimit = Math.min(isoPlayerCount, 8000);
-  for (let i = 0; i < displayLimit; i++) {
+  isoRenderedCount = 0;
+  isoMoreRow = null;
+  appendIsoPlayerChunk();
+}
+
+function appendIsoPlayerChunk() {
+  const list = document.getElementById('playerList');
+  if (isoMoreRow) { isoMoreRow.remove(); isoMoreRow = null; }
+  const end = Math.min(isoRenderedCount + PLAYER_LIST_CHUNK, isoPlayerCount);
+  for (let i = isoRenderedCount; i < end; i++) {
     const ppos = getIsoField(i, 'PPOS');
     const posName = POSITIONS[ppos] || `P${ppos}`;
     const ovr = getIsoField(i, 'POVR');
@@ -594,23 +622,33 @@ function populateIsoPlayerList() {
     li.onclick = () => selectIsoPlayer(i);
     list.appendChild(li);
   }
-  if (isoPlayerCount > displayLimit) {
+  isoRenderedCount = end;
+  if (isoRenderedCount < isoPlayerCount) {
     const li = document.createElement('li');
-    li.textContent = `... and ${isoPlayerCount - displayLimit} more (UI safety cap)`;
-    li.style.color = '#888';
+    li.textContent = `▼ Show more players (${isoPlayerCount - isoRenderedCount} remaining)`;
+    li.style.color = '#4fc3f7';
+    li.style.textAlign = 'center';
+    li.style.fontWeight = 'bold';
+    li.onclick = appendIsoPlayerChunk;
     list.appendChild(li);
+    isoMoreRow = li;
   }
-  const st = document.getElementById('status');
-  if (st) st.textContent += `  |  Showing ${displayLimit} players`;
+  updateShowingCount(isoRenderedCount, isoPlayerCount);
 }
 
 function populateGciPlayerList() {
   const list = document.getElementById('playerList');
   list.innerHTML = '';
-  // Full player list (no artificial 100-player cap). High practical limit
-  // keeps the DOM usable on mobile; matches the desktop editor's approach.
-  const displayLimit = Math.min(playerCount, 8000);
-  for (let i = 0; i < displayLimit; i++) {
+  gciRenderedCount = 0;
+  gciMoreRow = null;
+  appendGciPlayerChunk();
+}
+
+function appendGciPlayerChunk() {
+  const list = document.getElementById('playerList');
+  if (gciMoreRow) { gciMoreRow.remove(); gciMoreRow = null; }
+  const end = Math.min(gciRenderedCount + PLAYER_LIST_CHUNK, playerCount);
+  for (let i = gciRenderedCount; i < end; i++) {
     const [first, last] = getPlayerName(i);
     const name = (first + ' ' + last).trim() || `Player ${i}`;
     const ppos = getField(i, 'PPOS');
@@ -621,14 +659,18 @@ function populateGciPlayerList() {
     li.onclick = () => selectPlayer(i);
     list.appendChild(li);
   }
-  if (playerCount > displayLimit) {
+  gciRenderedCount = end;
+  if (gciRenderedCount < playerCount) {
     const li = document.createElement('li');
-    li.textContent = `... and ${playerCount - displayLimit} more (UI safety cap)`;
-    li.style.color = '#888';
+    li.textContent = `▼ Show more players (${playerCount - gciRenderedCount} remaining)`;
+    li.style.color = '#4fc3f7';
+    li.style.textAlign = 'center';
+    li.style.fontWeight = 'bold';
+    li.onclick = appendGciPlayerChunk;
     list.appendChild(li);
+    gciMoreRow = li;
   }
-  const st = document.getElementById('status');
-  if (st) st.textContent += `  |  Showing ${displayLimit} players`;
+  updateShowingCount(gciRenderedCount, playerCount);
 }
 
 function setupEditorUI() {

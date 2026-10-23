@@ -242,7 +242,9 @@ class PlayerEditor(QMainWindow):
             count = len(self.table.index)
 
         # Show all players (or a high practical limit). No more artificial 5-team / 100 limit.
-        display_limit = min(count, 8000)
+        # Full list: Qt handles the whole roster fine. The old 8,000-row
+        # cap left most ISO players (27,526 total) unselectable.
+        display_limit = count
 
         for i in range(display_limit):
             try:

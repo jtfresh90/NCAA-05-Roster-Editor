@@ -32,8 +32,10 @@ Empirical layout (reverse-engineered from
     V+0x60  field descriptors — parsed with gci_play_parser.parse_schema,
             the exact function the PLAY parser uses.
 - Records follow the schema after a short table-specific data header:
-    PLAY  schema ends DB+0xA6E8, "YSLP" header, records at DB+0xA708
-          (== gci_play_parser.PLAY_RECORDS_OFFSET), 52 bytes each.
+    PLAY  schema ends DB+0xA6E8, "YSLP" header (60 bytes), records at
+          DB+0xA724 (== gci_play_parser.PLAY_RECORDS_OFFSET), 52 bytes
+          each; 7,324 records fill 0xA724..0x676D4 exactly, then zero
+          padding to the TDYN block.
     DCHT  schema ends DB+0x80, "pedd" + 4 bytes, records at DB+0x88,
           4 bytes each; 7,728 consecutive non-zero records, then zero
           padding (next non-zero structure is far later in the region).
@@ -42,23 +44,23 @@ Empirical layout (reverse-engineered from
           exactly, filling the DB to its last byte.
 
 Field access uses the SAME convention as gci_play_parser.GCIPlayTable:
-the descriptor's stored word is the field's starting bit offset, bits are
-MSB-first (get_bits/set_bits from gci_play_parser).  For PLAY this parser
-is validated to reproduce GCIPlayTable exactly (same 85 fields, same
-2,000 records, same values).  For TDYN the convention decodes cleanly:
-the 8-bit team-rating fields (TRLB/TRQB/TRDE/TROF/TROL/...) land on
-plausible rating bytes (64-95) in all 119 records.  For DCHT the two
-fields (PGID/PPOS) round-trip through get/set like every other field;
-the array at DB+0x88 reads as a PGID-ordered index (PGID = first u16
-under an end-exclusive reading) — its exact in-game semantics are not
-fully confirmed, and this parser does not claim otherwise.
-
-Known limitation (pre-existing, not introduced here): whether the PLAY
-record bytes at DB+0xA708 decode to semantically plausible players was
-already flagged as unresolved in the Oct 12 2026 recon notes
-(~/workspace/recon/ncaa05/YALP_LOCATION_FINDINGS_2026-10-12.md §4).  This
-parser deliberately reproduces the shipped parser's PLAY behaviour
-bit-for-bit instead of inventing a new PLAY theory.
+the descriptor's stored word is the field's END bit (start = stored -
+size), bits are MSB-first (get_bits/set_bits from gci_play_parser),
+with PLAY's four anomalous fields pinned by
+gci_play_parser.PLAY_FIELD_START_OVERRIDES.  For PLAY this parser is
+validated to reproduce GCIPlayTable exactly (same 85 fields, same
+7,324 records, same values), and the shared layout is proven against
+the data (2026-10-23, ~/workspace/recon/ncaa05/
+PLAY_LOCATION_HUNT_2026-10-23.md): PLAY PPOS matches DCHT's PPOS on
+97.1% of shared PGIDs (the residual is DCHT multi-position ties), PHGT
+decodes to 65-81 inches, and the save's seven non-empty names decode
+to real names.  For TDYN the end-bit convention decodes cleanly: the
+8-bit team-rating fields (TRLB/TRQB/TRDE/TROF/TROL/...) land on
+plausible rating bytes (55-99) in all 119 records.  For DCHT, PGID is
+the record's first u16 and PPOS the following 5 bits under the same
+end-bit reading; the array reads as a PGID-ordered depth-chart index
+— its exact in-game semantics are not fully confirmed, and this parser
+does not claim otherwise.
 """
 
 from pathlib import Path
@@ -67,6 +69,7 @@ import struct
 from gci_play_parser import (
     get_bits, set_bits, gc_to_pc_name, parse_schema, decode_name,
     encode_name, GCI_DB_SIZE, PLAY_RECORDS_OFFSET, PLAY_RECORD_SIZE,
+    corrected_fields, PLAY_FIELD_START_OVERRIDES,
 )
 
 # DB directory constants (DB-relative)
@@ -87,7 +90,7 @@ SCHEMA_OFFSET_FROM_VALUE = 0x60
 # is the run of consecutive non-zero records inside the table's region.
 KNOWN_RECORD_LAYOUT = {
     # pc_name: (data_header_len_after_schema, count_mode)
-    'PLAY': (PLAY_RECORDS_OFFSET - 0xA6E8, 'legacy'),   # header len 32
+    'PLAY': (PLAY_RECORDS_OFFSET - 0xA6E8, 'legacy'),   # header len 60
     'DCHT': (8, 'nonzero_run'),
     'TDYN': (12, 'fill_to_region_end'),
 }
@@ -148,9 +151,12 @@ class GCITable:
         self.header_field_count_byte = data[v + HDR_FIELD_COUNT_OFFSET]
         self.header_word_5c = struct.unpack('>I', data[v + 0x5C:v + 0x60])[0]
 
-        # Schema — the exact parser the PLAY parser uses
+        # Schema — the exact parser the PLAY parser uses, converted to
+        # true start bits (end-bit rule; PLAY's anomalies pinned)
         self.schema_offset = v + SCHEMA_OFFSET_FROM_VALUE
-        self.fields = parse_schema(data, self.schema_offset)
+        overrides = PLAY_FIELD_START_OVERRIDES if self.name == 'PLAY' else None
+        self.fields = corrected_fields(
+            parse_schema(data, self.schema_offset), overrides)
         self.schema_end = _schema_end(data, self.schema_offset)
 
         # Records
@@ -299,21 +305,19 @@ class GCIDatabase:
             self.table_order.append(table.name)
 
     def _count_legacy_play_records(self):
-        """Verbatim copy of GCIPlayTable._count_records' counting loop
-        (caps at 2,000 records), run against this DB's bytes."""
+        """Mirror of GCIPlayTable._count_records (run of non-zero
+        records from PLAY_RECORDS_OFFSET), run against this DB's bytes."""
         records_offset = PLAY_RECORDS_OFFSET
         record_size = PLAY_RECORD_SIZE
         data = bytes(self.db_data)
         max_possible = (len(data) - records_offset) // record_size
         count = 0
-        for i in range(min(max_possible, 10000)):
+        for i in range(max_possible):
             rec_off = records_offset + i * record_size
             rec = data[rec_off:rec_off + record_size]
-            if len(rec) < record_size:
+            if len(rec) < record_size or all(b == 0 for b in rec):
                 break
             count += 1
-            if count >= 2000:
-                break
         return count
 
     def _parse_directory(self):

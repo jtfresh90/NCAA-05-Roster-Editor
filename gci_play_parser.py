@@ -10,7 +10,20 @@ Format summary:
 - GCI file contains DB at offset 0x880, size 0x730E0
 - DB has YALP (PLAY) table with GameCube-transformed field names
 - Schema: 85 fields, 16-byte BE descriptors [name][size][type][bit_offset]
-- Records: 52 bytes each at DB offset 0xA6F8, 16-byte header, data at +16
+- Records: 52 bytes each at DB offset 0xA724 (after the 60-byte "YSLP"
+  table-data header that follows the schema at 0xA6E8), bit-packed
+  MSB-first.  The roster GCI holds 7,324 records, filling
+  0xA724..0x676D4 exactly; zero padding follows.
+- The descriptor bit_offset word is the field's END bit (the field
+  occupies [offset-size, offset)) for all fields except four whose
+  stored words do not follow that rule; those four are pinned by
+  PLAY_FIELD_START_OVERRIDES below.  (Layout proven 2026-10-23 — see
+  ~/workspace/recon/ncaa05/PLAY_LOCATION_HUNT_2026-10-23.md: PPOS
+  matches the DCHT depth-chart table on 97.1% of shared PGIDs with the
+  residual fully explained by tied multi-position DCHT entries, PHGT
+  decodes to 65-81 inches, position-conditional ratings separate
+  exactly as football semantics require, and the seven non-empty name
+  fields in this save decode to real names, e.g. 'Kyle Studer'.)
 - Names: 6-bit alphabet (0=empty, 1-26=a-z, 27-52=A-Z, 53='-', 54="'", 55='.', 56=' ')
 - Ratings: 5-bit fields (PPOS, PTHA, PACC, PSPD, etc.)
 """
@@ -35,10 +48,26 @@ CHAR_TO_VAL = {v: k for k, v in ALPHABET.items() if v}
 GCI_DB_OFFSET = 0x880
 GCI_DB_SIZE = 0x730E0
 PLAY_SCHEMA_OFFSET = 0xA198
-PLAY_TABLE_HEADER_OFFSET = 0xA6F8  # 16-byte table header
-PLAY_RECORDS_OFFSET = 0xA708  # Records start after 16-byte header
+PLAY_TABLE_HEADER_OFFSET = 0xA6F8  # inside the post-schema "YSLP" header area
+PLAY_RECORDS_OFFSET = 0xA724  # First record: schema ends 0xA6E8, "YSLP" header is 60 bytes
 PLAY_RECORD_SIZE = 52
-PLAY_DATA_OFFSET = 0  # No per-record header; schema offsets are absolute
+PLAY_DATA_OFFSET = 0  # No per-record header; field starts are record-relative
+
+# Fields whose descriptor word does NOT follow the end-bit rule
+# (start = stored word - size).  Values are the field's true starting
+# bit in the record, per the second PLAY descriptor block in
+# LEAGUE.DAT (start-bit offsets, PLAY_RECORD_LAYOUT_2026-10-07.md
+# section 3) and confirmed empirically on this GCI (2026-10-23):
+# PGID is the unique sequential player ID at [16,32), PHGT is the
+# 65-81-inch height distribution at [390,397), PWGT separates by
+# position like a weight at [32,40), and PHED's stored word is 0
+# (the overlap anomaly noted since 2026-10-07) with its field at [0,4).
+PLAY_FIELD_START_OVERRIDES = {
+    'PGID': 16,
+    'PHGT': 390,
+    'PWGT': 32,
+    'PHED': 0,
+}
 
 
 def get_bits(buf, bit_off, bit_len):
@@ -113,11 +142,27 @@ def parse_schema(db_data, schema_offset=PLAY_SCHEMA_OFFSET):
         pc_name = gc_to_pc_name(name)
         fields[pc_name] = (size, bit_off)
         off += 16
-        
+
         if len(fields) > 200:
             break
-    
+
     return fields
+
+
+def corrected_fields(raw_fields, start_overrides=None):
+    """
+    Convert raw parse_schema output {name: (size, stored_word)} into
+    {name: (size, start_bit)} using the record-layout rule proven for
+    the GCI save format: the stored word is the field's END bit, so
+    start = stored - size, except for fields pinned in start_overrides.
+    """
+    out = {}
+    for name, (size, stored) in raw_fields.items():
+        if start_overrides and name in start_overrides:
+            out[name] = (size, start_overrides[name])
+        else:
+            out[name] = (size, stored - size)
+    return out
 
 
 def decode_name(rec_data, fields, prefix, count):
@@ -170,50 +215,33 @@ class GCIPlayTable:
             raise ValueError("No DB marker found in GCI")
         
         self.db_data = self.gci_data[self.db_offset:self.db_offset + GCI_DB_SIZE]
-        
-        # Parse schema
-        self.fields = parse_schema(self.db_data)
+
+        # Parse schema, then convert stored words to true start bits
+        self.fields = corrected_fields(
+            parse_schema(self.db_data), PLAY_FIELD_START_OVERRIDES)
         
         # Find records
         self.records_offset = PLAY_RECORDS_OFFSET
         self.record_size = PLAY_RECORD_SIZE
         self.data_offset = PLAY_DATA_OFFSET
         
-        # Count records (estimate from DB size)
-        # Records go from 0xA6F8 to end of table data
-        # For now, we'll parse until we hit invalid data
+        # Count records (run of non-zero records from 0xA724)
         self._count_records()
     
     def _count_records(self):
-        """Estimate record count by scanning for valid records."""
-        # The table data size is in the header, but for now
-        # we'll use a heuristic: scan until PGID-like pattern breaks
-        # Actually, let's just use a reasonable default and allow iteration
-        # 
-        # From the GCI, the PLAY table appears to have ~1000+ players
-        # (enough for all teams). We'll detect by checking for
-        # non-zero data.
+        """Count records: the run of non-zero 52-byte records starting
+        at PLAY_RECORDS_OFFSET.  Real records are never all-zero (every
+        one carries a non-zero PGID); zero records are the padding that
+        fills the rest of the table's region.  The roster GCI yields
+        7,324 records, ending exactly at DB+0x676D4."""
         max_possible = (len(self.db_data) - self.records_offset) // self.record_size
-        # Cap at reasonable number for NCAA (approx 120 teams * 70 players = 8400)
-        # But GCI roster is likely smaller. Let's scan.
         count = 0
-        for i in range(min(max_possible, 10000)):
+        for i in range(max_possible):
             rec_off = self.records_offset + i * self.record_size
             rec = self.db_data[rec_off:rec_off + self.record_size]
-            if len(rec) < self.record_size:
+            if len(rec) < self.record_size or all(b == 0 for b in rec):
                 break
-            # Check if record has any non-zero data beyond header
-            data_part = rec[self.data_offset:]
-            if all(b == 0 for b in data_part):
-                # Empty record, but might be valid (skip, continue counting?)
-                # For now, break on first fully empty
-                # Actually, let's continue - empty might be valid
-                pass
             count += 1
-            # Safety: if we've seen 5000 empty in a row, stop
-            # (simplified - just cap at 2000 for now)
-            if count >= 2000:
-                break
         self.record_count = count
     
     def get_record(self, index):
@@ -224,7 +252,8 @@ class GCIPlayTable:
         return self.db_data[off:off + self.record_size]
     
     def get_player_data(self, index):
-        """Get player data portion (36 bytes after 16-byte header)."""
+        """Get the player's record bytes (the full 52-byte record;
+        field start bits are record-relative)."""
         rec = self.get_record(index)
         return rec[self.data_offset:]
     
@@ -275,8 +304,9 @@ class GCIPlayTable:
         rec_data = bytearray(self.db_data[rec_off:rec_off + (self.record_size - self.data_offset)])
         
         # Set first name fields (PF01-PF10)
-        # Note: PF10 is at a different bit offset than PF01-PF09!
-        # PF10@46, PF01@58, PF02@76, etc. (from schema)
+        # Note: PF10 sits at a different bit position than PF01-PF09
+        # (letter fields are interleaved in the record; the fields dict
+        # already holds each field's true start bit).
         for i, val in enumerate(first_vals, 1):
             fname = f'PF{i:02d}'
             if fname in self.fields:

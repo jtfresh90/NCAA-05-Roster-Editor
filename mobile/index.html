@@ -38,7 +38,7 @@
 </div>
 
 <h1>NCAA Football 2005</h1>
-<div class="subtitle">Roster Editor v1.3.3</div>
+<div class="subtitle">Roster Editor v1.3.4</div>
 
 <div class="notice">
   <strong>Load a GCI save or ISO</strong><br>
@@ -84,8 +84,15 @@
 const GCI_DB_OFFSET = 0x880;
 const GCI_DB_SIZE = 0x730E0;
 const PLAY_SCHEMA_OFFSET = 0xA198;
-const PLAY_RECORDS_OFFSET = 0xA708;
+// Records start after the 60-byte "YSLP" table-data header that follows
+// the schema (proven layout, 2026-10-23 — matches the Python parsers).
+const PLAY_RECORDS_OFFSET = 0xA724;
 const PLAY_RECORD_SIZE = 52;
+
+// Fields whose descriptor word does NOT follow the end-bit rule
+// (start = stored word - size); pinned to their true start bits.
+// Mirrors PLAY_FIELD_START_OVERRIDES in gci_play_parser.py.
+const PLAY_FIELD_START_OVERRIDES = { PGID: 16, PHGT: 390, PWGT: 32, PHED: 0 };
 
 // 6-bit alphabet
 function decodeChar(v) {
@@ -96,6 +103,8 @@ function decodeChar(v) {
   if (v === 54) return "'";
   if (v === 55) return '.';
   if (v === 56) return ' ';
+  if (v === 57) return '@';
+  if (v === 58) return '±';
   return '?';
 }
 
@@ -106,6 +115,8 @@ function encodeChar(c) {
   if (c === "'") return 54;
   if (c === '.') return 55;
   if (c === ' ') return 56;
+  if (c === '@') return 57;
+  if (c === '±') return 58;
   return 56; // default to space
 }
 
@@ -187,6 +198,18 @@ function parseSchema() {
     off += 16;
     
     if (Object.keys(fields).length > 200) break;
+  }
+  
+  // Convert stored descriptor words to true start bits — mirrors the
+  // Python parser's corrected_fields(): the stored word is the field's
+  // END bit, so start = stored - size, except for the four fields
+  // pinned in PLAY_FIELD_START_OVERRIDES. (GCI schema only; the ISO
+  // path parses its own schema and is unchanged.)
+  for (const pc of Object.keys(fields)) {
+    const f = fields[pc];
+    f.bit = (pc in PLAY_FIELD_START_OVERRIDES)
+      ? PLAY_FIELD_START_OVERRIDES[pc]
+      : f.bit - f.size;
   }
   
   return Object.keys(fields).length;
@@ -393,11 +416,19 @@ document.getElementById('fileInput').addEventListener('change', async (e) => {
       const fieldCount = parseSchema();
       if (fieldCount === 0) throw new Error('Failed to parse PLAY schema');
       
-      // Estimate player count
+      // Count records like the Python parser: the run of consecutive
+      // non-zero 52-byte records from PLAY_RECORDS_OFFSET (real records
+      // are never all-zero; zero records are padding). The roster GCI
+      // yields 7,324 records — there is no fixed 2,000-player cap.
       playerCount = 0;
-      for (let i = 0; i < 2000; i++) {
+      const maxPossible = Math.floor((dbData.length - PLAY_RECORDS_OFFSET) / PLAY_RECORD_SIZE);
+      for (let i = 0; i < maxPossible; i++) {
         const off = PLAY_RECORDS_OFFSET + i * PLAY_RECORD_SIZE;
-        if (off + PLAY_RECORD_SIZE > dbData.length) break;
+        let allZero = true;
+        for (let b = 0; b < PLAY_RECORD_SIZE; b++) {
+          if (dbData[off + b] !== 0) { allZero = false; break; }
+        }
+        if (allZero) break;
         playerCount++;
       }
       

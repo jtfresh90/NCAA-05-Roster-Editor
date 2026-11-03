@@ -1,0 +1,52 @@
+NCAA Football 2005 (GameCube, USA) - three new helmet shells
+=============================================================
+
+WHAT IT CHANGES (PLADATA.DAT entries 7-10, the in-game player models pm2400/pm1200/pm600/pm300)
+  Revolution helmet slot  -> Speedflex shell, its own liner, groove overlay, env-map (shine) pass
+                             + the Speedflex facemask replaces the "RevoG2B" mask (close-up model only;
+                             the far-away models keep the stock low-detail mask card)
+  Schutt helmet slot      -> "Helmet" by osha22
+  Adams helmet slot       -> "Football Helmet" by ZionCaesar
+  Standard helmet         -> unchanged
+Team colours/stripes come from the game's own helmet textures: UVs were transferred from the stock shell, so
+every team's helmet art maps onto the new shapes. Logos, numbers and stickers are the stock decals; the new
+shells were pressed slightly under them so they stay visible. The stock Revo jaw piece/pad is switched off
+(the new shells have their own jaw flaps). Every other file entry is copied byte-for-byte.
+
+HOW TO APPLY
+  1. Extract PLADATA.DAT from your NCAA Football 2005 (USA) disc image.
+  2. python3 apply_helmets_ncaa05.py PLADATA.DAT PLADATA_new.DAT
+  3. Put PLADATA_new.DAT back into the image as /PLADATA.DAT (the file grows by ~380 KB, so rebuild the
+     image with a tool that rebuilds the file table, e.g. GCRebuilder or Dolphin-extract + gc-fst).
+     Optional finishes per helmet (default = gloss, the game's normal shine):
+       python3 apply_helmets_ncaa05.py PLADATA.DAT PLADATA_new.DAT --finish revo=matte schutt=chrome adams=gloss
+     matte  = the helmet's shine (EnvMap) pass is switched off; logos/numbers/stickers are separate decal pieces
+              that never get that pass, so they look the same on every finish
+     chrome = the shine pass is drawn twice (stronger reflection); the farthest patched model only has room for
+              one pass, so it stays gloss
+     With --finish the four models are stored uncompressed (codec 0, already used by some models in the game),
+     so the file is ~1 MB bigger.
+  4. Boot in Dolphin. Give a player the Revolution / Schutt / Adams helmet in the roster editor to see them.
+
+WHAT HAS BEEN CHECKED HERE AND WHAT HASN'T
+  Checked: each patched model re-parses; every display list decodes to its declared vertex count with in-range
+  indices; the four entries round-trip through the game's own LZH1 codec, run from main.dol in an emulator;
+  the archive rebuild reproduces the original byte-for-byte when no entries are replaced.
+  Not checked: running the game. Nothing could be run in Dolphin here. Things to watch for:
+   - The close-up model grew from 419 KB to 747 KB. If the game crashes or the players vanish when the models
+     load, it is most likely a fixed memory pool; tell me and I'll cut the triangle counts.
+   - Back-face culling and the shine (EnvMap) pass on the new shells.
+   - The finishes rely on the "EnvMap" swap group being the helmet's reflection pass (it lists only the shell,
+     never the decals, which fits). If matte/chrome look no different in game, tell me.
+
+FILES
+  apply_helmets_ncaa05.py, entries.txt, entry00NN.lzh1   the patch (compressed models)
+  entry00NN.bin                                            the same models uncompressed (used for --finish)
+  game_meshes/*.obj                                        the game-ready meshes as inserted (close-up LOD)
+  preview_*.png                                            renders read back from the patched model files
+
+CREDITS (CC-BY-4.0)
+  "Helmet" by osha22 - https://sketchfab.com/3d-models/helmet-a640575d4c224ba3ba8e427a4421a28a
+  "Football Helmet" by ZionCaesar - https://sketchfab.com/3d-models/football-helmet-2d98a42dd7ef4899bfec85e10bfbd555
+  "Buffalo Bills Helmet" (Speedflex) by Exodusks - https://sketchfab.com/3d-models/buffalo-bills-helmet-fd471344bf9c4900b8cc0f59fedb8093
+  Changes: logos/stripes removed, decimated, re-fitted and converted for NCAA 05.

@@ -31,14 +31,29 @@ jobs:
             --name "NCAA05-Team-Browser" `
             ncaa05_gui.py
       
+      - name: Build Player Editor EXE (with Helmets tab + helmet pack data)
+        run: |
+          pyinstaller --onefile --windowed --noconfirm `
+            --hidden-import PyQt5.sip `
+            --collect-all PyQt5 `
+            --hidden-import helmets.helmet_tab `
+            --hidden-import helmets.helmet_pack `
+            --add-data "helmets/pack;helmets/pack" `
+            --name "NCAA05-Player-Editor" `
+            ncaa05_player_editor.py
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: NCAA05-Team-Browser-Windows
-          path: dist/NCAA05-Team-Browser.exe
+          path: |
+            dist/NCAA05-Team-Browser.exe
+            dist/NCAA05-Player-Editor.exe
       
       - name: Upload to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/NCAA05-Team-Browser.exe
+          files: |
+            dist/NCAA05-Team-Browser.exe
+            dist/NCAA05-Player-Editor.exe

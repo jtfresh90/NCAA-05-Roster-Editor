@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 NCAA Football 2005 Player Editor (PyQt5 GUI)
+v1.5.0 - Helmets tab (helmet pack + glossy/matte/chrome finishes)
 v1.4.0 - All PLAY fields + generic table editor (GCI)
 
 Features:
@@ -137,7 +138,7 @@ def field_label(code):
 class PlayerEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NCAA Football 2005 Player Editor v1.4.0")
+        self.setWindowTitle("NCAA Football 2005 Player Editor v1.5.0")
         self.setGeometry(100, 100, 1100, 720)
 
         self.mode = None          # 'gci' or 'iso'

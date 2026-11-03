@@ -174,6 +174,11 @@ class PlayerEditor(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_players_tab(), "Players")
         self.tabs.addTab(self._build_tables_tab(), "Tables (GCI)")
+        try:
+            from helmets.helmet_tab import HelmetTab
+            self.tabs.addTab(HelmetTab(), "Helmets (PLADATA)")
+        except Exception as e:  # keep the roster editor usable even if the helmet pack is missing
+            print("Helmets tab unavailable:", e)
         main_layout.addWidget(self.tabs)
 
     # ------------------------------------------------------------------

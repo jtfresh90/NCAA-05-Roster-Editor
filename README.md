@@ -28,6 +28,23 @@ Still research-preview quality overall. Team names in ISO mode remain “Player 
 ### 3. Model Swap
 - Whole-entry mesh swapping in PLADATA.DAT etc. (`model_swap.py`)
 
+### 4. Helmet Pack + Helmet Finishes (`helmets/`)
+- Adds three helmet shells to the player models in PLADATA.DAT: Speedflex (Revolution slot, plus its facemask as
+  the RevoG2B mask), "Helmet" by osha22 (Schutt slot) and "Football Helmet" by ZionCaesar (Adams slot).
+  The standard helmet stays stock.
+- Per helmet type finish: **Glossy** (game default), **Matte** (shine pass off) or **Chrome** (shine pass doubled).
+  Decals/stickers never get the shine, so they look the same on every finish.
+- Desktop editor: **Helmets (PLADATA)** tab -> Open PLADATA.DAT -> pick finishes -> Save.
+- Command line:
+
+```bash
+python helmets/helmet_pack.py show PLADATA.DAT
+python helmets/helmet_pack.py install PLADATA.DAT PLADATA_new.DAT --finish revo=matte schutt=chrome adams=gloss std=gloss
+```
+
+- Put the saved file back into the disc image as `/PLADATA.DAT` (the file grows, so rebuild the image, e.g.
+  GCRebuilder). Not yet verified in Dolphin. Credits/licences: `helmets/PACK_NOTES.txt` (all CC-BY-4.0).
+
 ## Quick Start (Desktop)
 
 ```bash

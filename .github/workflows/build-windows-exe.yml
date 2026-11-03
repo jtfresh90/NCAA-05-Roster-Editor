@@ -38,6 +38,7 @@ jobs:
             --collect-all PyQt5 `
             --hidden-import helmets.helmet_tab `
             --hidden-import helmets.helmet_pack `
+            --hidden-import helmets.team_finish `
             --add-data "helmets/pack;helmets/pack" `
             --name "NCAA05-Player-Editor" `
             ncaa05_player_editor.py

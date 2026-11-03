@@ -45,6 +45,27 @@ python helmets/helmet_pack.py install PLADATA.DAT PLADATA_new.DAT --finish revo=
 - Put the saved file back into the disc image as `/PLADATA.DAT` (the file grows, so rebuild the image, e.g.
   GCRebuilder). Not yet verified in Dolphin. Credits/licences: `helmets/PACK_NOTES.txt` (all CC-BY-4.0).
 
+#### Per-team helmet finishes (main.dol patch)
+- The game picks the helmet shine from the helmet type. A small `main.dol` patch (`helmets/team_finish.py`) makes
+  it look up the player's **team** instead: each team ID can be Glossy, Matte or Chrome, overriding the
+  helmet-type finish. Stickers/decals are unaffected.
+- Desktop editor: Helmets tab -> **Open main.dol** -> set each team's finish (optionally load team names from
+  LEAGUE.DAT) -> **Save main.dol as...**. Needs the helmet pack installed in PLADATA.DAT as well (chrome uses
+  extra shine options that the pack adds to the player models).
+- Command line:
+
+```bash
+python helmets/team_finish.py set main.dol main_new.dol 12=matte 40=chrome
+python helmets/team_finish.py show main_new.dol
+```
+
+- Put the patched DOL back as the disc's boot file (`sys/main.dol`) and rebuild the image.
+- How it works: hooks at 0x802f5454 / 0x8005a824 remember each side's team ID (TOID) when uniforms are set up;
+  hooks at 0x802464a4 / 0x80246710 (where the EnvMap shine option is chosen) switch it to "none" for matte or to
+  the doubled "Chr*" option for chrome. Code and the 512-entry team table live in a new DOL section at 0x80001800.
+  Tested in a PowerPC emulator; not yet verified in Dolphin. The team-name column is a guess from LEAGUE.DAT order
+  until team IDs are confirmed in game.
+
 ## Quick Start (Desktop)
 
 ```bash

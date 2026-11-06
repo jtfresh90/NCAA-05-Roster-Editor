@@ -18,8 +18,13 @@ Each helmet type can be given a finish:
 Logos, numbers and stickers are separate decal pieces that never get the shine pass, so they look the same on
 every finish. The finish is per helmet type (all players wearing that helmet), not per team.
 
+Helmet library (helmets/library.py): seven helmets modelled from the makers' product photos (SpeedFlex, Axiom, F7,
+Air XP, Zero2, Shadow XR, Gladiator styles; no logos) that can go into any of the four slots, plus 14 facemasks.
+
 Command line:
     python3 helmets/helmet_pack.py install PLADATA.DAT PLADATA_new.DAT [--finish revo=matte schutt=chrome ...]
+    python3 helmets/helmet_pack.py library PLADATA.DAT PLADATA_new.DAT [std=speedflex adams=zero2 schutt=f7 revo=axiom]
+                                           [--stock-masks] [--finish revo=matte ...]
     python3 helmets/helmet_pack.py show PLADATA.DAT
 
 Pure Python 3, no extra packages. Every other entry of the archive is copied byte-for-byte.
@@ -216,6 +221,30 @@ def install(src, dst, finishes=None, log=print):
     return sha
 
 
+def install_library(src, dst, slots, masks=True, finishes=None, log=print):
+    """Write dst = src with library helmets in the chosen slots ({slot: helmet key or None}), optionally the library
+    facemasks, and the per-slot finishes. The four player models are stored uncompressed (codec 0)."""
+    from . import library as LIB
+    finishes = {k: v for k, v in (finishes or {}).items() if v}
+    for k, v in finishes.items():
+        if k not in SLOTS or v not in FINISHES:
+            raise ValueError('bad finish %s=%s' % (k, v))
+    t = Terf(src)
+    if t.sha1() != STOCK_SHA1:
+        log('note: source PLADATA.DAT is not the stock USA file (it may already be patched); '
+            'entries 7-10 are rebuilt from the stock models either way, everything else is kept as-is')
+    rep = {}
+    for e in PLAYER_MODELS:
+        m = LIB.assemble(e, slots, masks=masks)
+        for slot, fin in finishes.items():
+            m = set_finish(m, slot, fin)
+        rep[e] = (0, m, len(m))
+        log('%s: %d bytes' % (LOD_NAMES[e], len(m)))
+    sha = t.write(dst, rep)
+    log('wrote %s (sha1 %s)' % (dst, sha))
+    return sha
+
+
 def show(path):
     """{slot: finish} read from an installed PLADATA.DAT (None if it can't be told)."""
     t = Terf(path)
@@ -237,7 +266,7 @@ def show(path):
 
 
 def main(argv):
-    if len(argv) < 2 or argv[0] not in ('install', 'show'):
+    if len(argv) < 2 or argv[0] not in ('install', 'show', 'library'):
         print(__doc__)
         return 1
     if argv[0] == 'show':
@@ -245,6 +274,21 @@ def main(argv):
         print('helmet pack installed:', r['installed'])
         for s, (_, label) in SLOTS.items():
             print('  %-7s %-45s %s' % (s, label, r[s]))
+        return 0
+    if argv[0] == 'library':
+        from helmets import library as LIB
+        files = [a for a in argv[1:] if '=' not in a and not a.startswith('--')]
+        slots = dict(LIB.DEFAULT_SLOTS); fin = {}
+        mode = 'slots'
+        for a in argv[1:]:
+            if a == '--finish': mode = 'finish'; continue
+            if '=' in a:
+                k, v = a.lower().split('=', 1)
+                if mode == 'finish': fin[k] = v
+                else: slots[k] = None if v in ('stock', 'none') else v
+        if len(files) != 2:
+            print(__doc__); return 1
+        install_library(files[0], files[1], slots, masks='--stock-masks' not in argv, finishes=fin)
         return 0
     files = [a for a in argv[1:] if '=' not in a and a != '--finish']
     fin = {}

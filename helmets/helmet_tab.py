@@ -8,11 +8,13 @@ from PyQt5.QtCore import Qt
 
 from . import helmet_pack as HP
 from . import team_finish as TF
+from . import library as LIB
 
 TEAM_ROWS = 256  # team ids shown in the per-team table (TOID 0-255)
 
 PREVIEWS = {'revo': 'preview_revo_slot_speedflex.png', 'schutt': 'preview_schutt_slot_osha22.png',
             'adams': 'preview_adams_slot_zioncaesar.png'}
+SLOT_NAMES = {'std': 'Standard slot', 'adams': 'Adams slot', 'schutt': 'Schutt slot', 'revo': 'Revolution slot'}
 FINISH_LABELS = {'gloss': 'Glossy (game default)', 'matte': 'Matte', 'chrome': 'Chrome'}
 
 
@@ -30,16 +32,41 @@ class HelmetTab(QWidget):
         top.addWidget(self.file_label, 1)
         lay.addLayout(top)
 
-        box = QGroupBox('Helmet finish (applies to every player wearing that helmet type)')
+        box = QGroupBox('Helmet slots: model + finish (applies to every player wearing that helmet type)')
         form = QFormLayout(box)
         self.combos = {}
+        self.models = {}
+        helmets = LIB.available_helmets()
+        mode_row = QHBoxLayout()
+        self.mode = QComboBox()
+        self.mode.addItem('Helmet library (pick a helmet for each slot)', 'library')
+        self.mode.addItem('Original helmet pack (Speedflex / osha22 / ZionCaesar)', 'pack')
+        self.mode.currentIndexChanged.connect(self.mode_changed)
+        mode_row.addWidget(self.mode, 1)
+        self.masks_box = QComboBox()
+        self.masks_box.addItem('New facemask set (14 masks)', True)
+        self.masks_box.addItem('Stock facemasks', False)
+        mode_row.addWidget(self.masks_box)
+        form.addRow('Pack:', mode_row)
         for slot, (_, label) in HP.SLOTS.items():
+            row = QHBoxLayout()
+            mc = QComboBox()
+            mc.addItem('Stock helmet', None)
+            for h in helmets:
+                mc.addItem(LIB.HELMETS.get(h, (h,))[0], h)
+            d = LIB.DEFAULT_SLOTS.get(slot)
+            if d in helmets:
+                mc.setCurrentIndex(helmets.index(d) + 1)
+            mc.currentIndexChanged.connect(lambda _i, s=slot: self.show_preview(s))
+            self.models[slot] = mc
+            row.addWidget(mc, 2)
             c = QComboBox()
             for f in HP.FINISHES:
                 c.addItem(FINISH_LABELS[f], f)
             c.currentIndexChanged.connect(lambda _i, s=slot: self.show_preview(s))
             self.combos[slot] = c
-            form.addRow(label + ':', c)
+            row.addWidget(c, 1)
+            form.addRow(SLOT_NAMES[slot] + ':', row)
         lay.addWidget(box)
 
         note = QLabel('Logos, numbers and stickers are separate decal pieces and never get the helmet shine, so they '
@@ -55,7 +82,7 @@ class HelmetTab(QWidget):
         mid.addWidget(self.preview, 1)
         lay.addLayout(mid, 1)
 
-        self.save_btn = QPushButton('Install helmet pack + finishes  ->  Save PLADATA.DAT as...')
+        self.save_btn = QPushButton('Install helmets + finishes  ->  Save PLADATA.DAT as...')
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self.save)
         lay.addWidget(self.save_btn)
@@ -110,7 +137,23 @@ class HelmetTab(QWidget):
     def say(self, msg):
         self.log.appendPlainText(msg)
 
+    def mode_changed(self, _i=None):
+        lib = self.mode.currentData() == 'library'
+        for mc in self.models.values():
+            mc.setEnabled(lib)
+        self.masks_box.setEnabled(lib)
+        self.show_preview('std')
+
     def show_preview(self, slot):
+        if self.mode.currentData() == 'library':
+            h = self.models[slot].currentData()
+            p = os.path.join(LIB.LIB, 'previews', '%s.png' % h) if h else ''
+            if p and os.path.exists(p):
+                pm = QPixmap(p)
+                self.preview.setPixmap(pm.scaledToWidth(min(1000, max(400, self.width() - 40)), Qt.SmoothTransformation))
+            else:
+                self.preview.setText('%s: stock helmet' % SLOT_NAMES[slot])
+            return
         p = os.path.join(HP.PACK, PREVIEWS.get(slot, ''))
         if slot in PREVIEWS and os.path.exists(p):
             pm = QPixmap(p)
@@ -150,7 +193,11 @@ class HelmetTab(QWidget):
                 self.say('Backup written: %s' % bak)
         fin = {slot: c.currentData() for slot, c in self.combos.items()}
         try:
-            HP.install(self.src, dst, fin, log=self.say)
+            if self.mode.currentData() == 'library':
+                slots = {slot: mc.currentData() for slot, mc in self.models.items()}
+                HP.install_library(self.src, dst, slots, masks=self.masks_box.currentData(), finishes=fin, log=self.say)
+            else:
+                HP.install(self.src, dst, fin, log=self.say)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, 'Helmets', 'Install failed:\n%s' % e)
             return

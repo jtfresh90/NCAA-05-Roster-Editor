@@ -28,6 +28,10 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
+# Release version shown in the window title — bump on every release so the
+# EXE always shows which release it was built from.
+VERSION = "v1.5.0"
+
 # Import parsers
 sys.path.insert(0, str(Path(__file__).parent))
 try:
@@ -138,7 +142,7 @@ def field_label(code):
 class PlayerEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NCAA Football 2005 Player Editor v1.5.0")
+        self.setWindowTitle(f"NCAA Football 2005 Player Editor {VERSION}")
         self.setGeometry(100, 100, 1100, 720)
 
         self.mode = None          # 'gci' or 'iso'

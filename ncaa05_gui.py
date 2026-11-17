@@ -16,7 +16,7 @@ from ncaa05_db import extract_team_names, extract_league_dat_from_iso
 class TeamBrowser(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("NCAA Football 2005 Team Browser v1.2.0")
+        self.setWindowTitle("NCAA Football 2005 Team Browser v1.5.0")
         self.setGeometry(100, 100, 500, 600)
         
         # Central widget

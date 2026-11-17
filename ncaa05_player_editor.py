@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QListWidget, QVBoxLayout, QHBoxLayout,
     QWidget, QPushButton, QFileDialog, QLabel, QMessageBox, QSplitter,
     QFormLayout, QLineEdit, QSpinBox, QComboBox, QGroupBox, QScrollArea,
-    QTabWidget
+    QTabWidget, QInputDialog
 )
 from PyQt5.QtCore import Qt
 
@@ -53,6 +53,20 @@ except ImportError:
     ISO_AVAILABLE = False
 
 from ncaa05_db import extract_league_dat_from_iso
+
+# Roster CSV + mod packages (MacDog850-style workflow).  Optional in
+# the same sense as the parsers above: the editor still boots without
+# them, but the four roster buttons warn instead of working.
+try:
+    from ncaa05_roster_csv import (
+        GciRoster, IsoRoster, export_csv, import_csv, RosterCsvError,
+    )
+    from ncaa05_modpack import (
+        build_pack, apply_pack, export_pack_bytes, ModpackError,
+    )
+    CSV_AVAILABLE = True
+except ImportError:
+    CSV_AVAILABLE = False
 
 # Position names (from NCAA / EA DB)
 POSITIONS = [
@@ -151,6 +165,7 @@ class PlayerEditor(QMainWindow):
         self.source_path = None
         self.current_player_idx = -1
         self.modified = False
+        self._opened_bytes = None  # GCI file bytes as opened (pack base)
 
         self._build_ui()
 
@@ -169,6 +184,27 @@ class PlayerEditor(QMainWindow):
         self.save_btn.clicked.connect(self.save_file)
         self.save_btn.setEnabled(False)
         toolbar.addWidget(self.save_btn)
+
+        # Roster CSV + mod packages (MacDog850-style workflow)
+        self.csv_export_btn = QPushButton("Export Roster CSV")
+        self.csv_export_btn.clicked.connect(self.export_roster_csv)
+        self.csv_export_btn.setEnabled(False)
+        toolbar.addWidget(self.csv_export_btn)
+
+        self.csv_import_btn = QPushButton("Import Roster CSV")
+        self.csv_import_btn.clicked.connect(self.import_roster_csv)
+        self.csv_import_btn.setEnabled(False)
+        toolbar.addWidget(self.csv_import_btn)
+
+        self.pack_export_btn = QPushButton("Export Mod Package")
+        self.pack_export_btn.clicked.connect(self.export_mod_package)
+        self.pack_export_btn.setEnabled(False)
+        toolbar.addWidget(self.pack_export_btn)
+
+        self.pack_import_btn = QPushButton("Import Mod Package")
+        self.pack_import_btn.clicked.connect(self.import_mod_package)
+        self.pack_import_btn.setEnabled(False)
+        toolbar.addWidget(self.pack_import_btn)
 
         toolbar.addStretch()
 
@@ -339,6 +375,9 @@ class PlayerEditor(QMainWindow):
                 self.table = GCIPlayTable(str(path))
                 self.mode = 'gci'
                 self.source_path = path
+                # Snapshot the file as opened: a mod package captures
+                # "what changed since you opened this file".
+                self._opened_bytes = path.read_bytes()
                 count = self.table.record_count
                 self.status_label.setText(
                     f"GCI: {path.name} — {count} players, {len(self.table.fields)} fields"
@@ -380,6 +419,10 @@ class PlayerEditor(QMainWindow):
 
             self._populate_player_list()
             self.save_btn.setEnabled(True)
+            self.csv_export_btn.setEnabled(True)
+            self.csv_import_btn.setEnabled(True)
+            self.pack_export_btn.setEnabled(True)
+            self.pack_import_btn.setEnabled(True)
             self.modified = False
 
         except Exception as e:
@@ -679,6 +722,216 @@ class PlayerEditor(QMainWindow):
             self._on_record_changed(idx)
         except Exception as e:
             QMessageBox.warning(self, "Apply failed", str(e))
+
+    # ------------------------------------------------------------------
+    # Roster CSV + mod packages (MacDog850-style workflow)
+    # ------------------------------------------------------------------
+    def _roster_source(self):
+        """A ncaa05_roster_csv source for the loaded file, or None
+        with a message if this mode has no roster source.
+
+        GCI mode wraps the live table (unsaved GUI edits included).
+        ISO mode reads the default roster from the ISO file's
+        TEMPLATE.DAT — the live view is the LEAGUE.DAT table, so ISO
+        CSV work is file-level, not live.  A bare LEAGUE.DAT has no
+        player records at all, so it is refused here."""
+        if self.table is None or self.source_path is None:
+            QMessageBox.information(
+                self, "Roster CSV",
+                "Open a GCI save or an ISO image first.")
+            return None
+        if self.mode == 'gci':
+            return GciRoster(table=self.table)
+        if self.mode == 'iso' and \
+                self.source_path.suffix.lower() == '.iso':
+            return IsoRoster(self.source_path)
+        QMessageBox.information(
+            self, "Roster CSV",
+            "CSV export/import needs a GCI save or an ISO image.\n"
+            "A LEAGUE.DAT file alone has no player records —\n"
+            "open the ISO it came from instead.")
+        return None
+
+    def _merged_gci_bytes(self):
+        """GCI bytes with Players-tab + Tables-tab edits merged —
+        the same merge _save_gci_merged does, but in memory, so a
+        mod package captures both tabs' edits."""
+        from gci_play_parser import PLAY_RECORDS_OFFSET, PLAY_RECORD_SIZE
+        if self.db is not None:
+            merged_db = bytearray(self.db.db_data)
+            start = PLAY_RECORDS_OFFSET
+            end = start + self.table.record_count * PLAY_RECORD_SIZE
+            merged_db[start:end] = self.table.db_data[start:end]
+            gci = bytearray(self.db.gci_data)
+            gci[self.db.db_offset:
+                self.db.db_offset + len(merged_db)] = merged_db
+            return bytes(gci)
+        return GciRoster(table=self.table).modified_bytes()
+
+    def export_roster_csv(self):
+        if not CSV_AVAILABLE:
+            QMessageBox.warning(
+                self, "Roster CSV",
+                "ncaa05_roster_csv.py was not found next to the editor.")
+            return
+        try:
+            roster = self._roster_source()
+            if roster is None:
+                return
+            default = str(self.source_path.with_suffix('.roster.csv'))
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export roster CSV", default, "CSV files (*.csv)")
+            if not path:
+                return
+            rows, named = export_csv(roster, path)
+            self.status_label.setText(
+                f"Exported {rows} players ({named} named) "
+                f"to {Path(path).name}")
+        except RosterCsvError as e:
+            QMessageBox.warning(self, "Roster CSV", str(e))
+        except Exception as e:
+            QMessageBox.critical(self, "Roster CSV", f"Export failed:\n{e}")
+
+    def import_roster_csv(self):
+        if not CSV_AVAILABLE:
+            QMessageBox.warning(
+                self, "Roster CSV",
+                "ncaa05_roster_csv.py was not found next to the editor.")
+            return
+        if self.table is None or self.source_path is None:
+            QMessageBox.information(
+                self, "Roster CSV",
+                "Open a GCI save or an ISO image first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import roster CSV", "", "CSV files (*.csv)")
+        if not path:
+            return
+        try:
+            if self.mode == 'gci':
+                roster = GciRoster(table=self.table)
+                changed = import_csv(roster, path)
+                self.modified = True
+                self._populate_player_list()
+                self.status_label.setText(
+                    f"CSV imported: {changed} records changed "
+                    "(in memory) — click Save to write file")
+            elif self.mode == 'iso' and \
+                    self.source_path.suffix.lower() == '.iso':
+                # File-level: the live view is the LEAGUE.DAT table,
+                # so the import writes a NEW ISO to re-open.
+                roster = IsoRoster(self.source_path)
+                changed = import_csv(roster, path)
+                out, _ = QFileDialog.getSaveFileName(
+                    self, "Save modified ISO", str(self.source_path),
+                    "ISO images (*.iso)")
+                if not out:
+                    self.status_label.setText(
+                        "CSV import cancelled — nothing written")
+                    return
+                roster.write(out)
+                self.status_label.setText(
+                    f"CSV imported: {changed} records changed — "
+                    f"wrote {Path(out).name} (re-open it to see "
+                    "the changes)")
+            else:
+                QMessageBox.information(
+                    self, "Roster CSV",
+                    "CSV import needs a GCI save or an ISO image.\n"
+                    "A LEAGUE.DAT file alone has no player records.")
+        except RosterCsvError as e:
+            QMessageBox.warning(self, "Roster CSV import refused", str(e))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Roster CSV", f"Import failed:\n{e}")
+
+    def export_mod_package(self):
+        if not CSV_AVAILABLE:
+            QMessageBox.warning(
+                self, "Mod package",
+                "ncaa05_modpack.py was not found next to the editor.")
+            return
+        if self.table is None or self.source_path is None:
+            QMessageBox.information(
+                self, "Mod package",
+                "Open a GCI save or an ISO image first.")
+            return
+        name, ok = QInputDialog.getText(
+            self, "Export mod package", "Mod name:")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        default = str(self.source_path.with_suffix('.zip'))
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export mod package", default, "Mod packages (*.zip)")
+        if not path:
+            return
+        try:
+            if self.mode == 'gci':
+                # Pack what changed since this file was opened, with
+                # Players-tab + Tables-tab edits merged.
+                modified = self._merged_gci_bytes()
+                export_pack_bytes(
+                    'gci', self.source_path, self.source_path.name,
+                    self._opened_bytes, modified, name, path,
+                    "Player Editor export")
+                self.status_label.setText(
+                    f"Exported mod package {Path(path).name}")
+            elif self.mode == 'iso' and \
+                    self.source_path.suffix.lower() == '.iso':
+                # The live ISO view is the LEAGUE.DAT table, so an
+                # ISO pack is built from a CSV applied to the file.
+                csv_path, _ = QFileDialog.getOpenFileName(
+                    self, "CSV to build the package from", "",
+                    "CSV files (*.csv)")
+                if not csv_path:
+                    return
+                build_pack(str(self.source_path), csv_path, name, path,
+                           "Roster CSV import")
+                self.status_label.setText(
+                    f"Exported mod package {Path(path).name}")
+            else:
+                QMessageBox.information(
+                    self, "Mod package",
+                    "Mod packages need a GCI save or an ISO image.\n"
+                    "A LEAGUE.DAT file alone has no player records.")
+        except (RosterCsvError, ModpackError) as e:
+            QMessageBox.warning(self, "Mod package", str(e))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Mod package", f"Export failed:\n{e}")
+
+    def import_mod_package(self):
+        if not CSV_AVAILABLE:
+            QMessageBox.warning(
+                self, "Mod package",
+                "ncaa05_modpack.py was not found next to the editor.")
+            return
+        pack, _ = QFileDialog.getOpenFileName(
+            self, "Import mod package", "", "Mod packages (*.zip)")
+        if not pack:
+            return
+        target, _ = QFileDialog.getOpenFileName(
+            self, "Target file (the unmodified base the pack was "
+            "built against)", "",
+            "GCI saves and ISO images (*.gci *.iso)")
+        if not target:
+            return
+        out, _ = QFileDialog.getSaveFileName(
+            self, "Save patched file as", target,
+            "GCI saves (*.gci);;ISO images (*.iso);;All (*)")
+        if not out:
+            return
+        try:
+            key = apply_pack(pack, target, out)
+            self.status_label.setText(
+                f"Applied package to {Path(out).name} ({key}) — "
+                "open it to use it")
+        except (RosterCsvError, ModpackError) as e:
+            QMessageBox.warning(self, "Mod package refused", str(e))
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Mod package", f"Import failed:\n{e}")
 
     # ------------------------------------------------------------------
     # Saving

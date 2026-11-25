@@ -41,6 +41,7 @@ jobs:
             --hidden-import ncaa05_roster_csv `
             --hidden-import ncaa05_modpack `
             --add-data "helmets/pack;helmets/pack" `
+            --add-data "pgid_team_mapping.csv;." `
             --name "NCAA05-Player-Editor" `
             ncaa05_player_editor.py
 

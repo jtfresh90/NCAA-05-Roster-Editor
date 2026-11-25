@@ -15,7 +15,7 @@ from ncaa05_db import extract_team_names, extract_league_dat_from_iso
 
 # Release version shown in the window title — bump on every release so the
 # EXE always shows which release it was built from.
-VERSION = "v1.5.0"
+VERSION = "v1.6.0"
 
 class TeamBrowser(QMainWindow):
     def __init__(self):

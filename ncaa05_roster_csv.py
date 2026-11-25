@@ -29,11 +29,15 @@ CSV FORMAT (one row per player, keyed by PGID — the stable unique ID):
   * RCHD (16 bits @ 0) overlaps PHED (4 bits @ 0); import writes
     fields in bit order, wider first, so RCHD lands before PHED and a
     read-back pass verifies every field afterwards.
-  * team is EMPTY in v1 exports: no PLAY field carries a team, DCHT
-    is PGID-ordered with no team boundaries, and the per-team DBs'
-    YSLP record layout (the only candidate mapping) is undecoded.
-    Import REFUSES any non-empty team value rather than silently
-    dropping it.  See "Known gaps" below.
+  * team comes from pgid_team_mapping.csv (decoded from LEAGUE.DAT's
+    TEAM table + per-team DBs, 2026-11-17; TGID = PGID // 70).  No
+    PLAY field carries a team, so the column is informational:
+    export fills it from the mapping; import checks a non-empty
+    value against the mapping and REFUSES a mismatch rather than
+    silently dropping it (a CSV cannot move a player between
+    teams — team is derived from the player ID).  An empty team
+    value is accepted, so CSVs exported before the mapping existed
+    still import.
 
 SAFETY (same rules as the desktop editor):
   * Import NEVER overwrites its input: it writes a new file.
@@ -57,10 +61,6 @@ SAFETY (same rules as the desktop editor):
     (first > 10, last > 13) are likewise refused, never truncated.
 
 KNOWN GAPS (reported, not papered over):
-  * Team mapping is unimplemented (see above).  The follow-up is to
-    decode the LEAGUE.DAT per-team DBs' YSLP record layout; the
-    landmarks are mapped (442-file TERF, team DBs ~4.4-5.5 KB each,
-    team-names table is TERF file 1, YSLP present in 399 of 420).
   * Default-roster players have NO names in the PLAY records
     (TEMPLATE.DAT: 0 of 7,324 named; the roster GCI has 7 named —
     created players).  The CSV is therefore the vehicle for ADDING
@@ -94,6 +94,11 @@ from ncaa05_db import find_iso_file, GAME_ID
 TEMPLATE_DB_OFFSET = 0x1BA340
 TEMPLATE_DB_SIZE = 0x730E0
 EXPECTED_RECORD_COUNT = 7324
+
+# pgid -> team name, decoded from LEAGUE.DAT (TEAM table + per-team
+# DBs, 2026-11-17; TGID = PGID // 70).  Data file next to this module.
+TEAM_MAPPING_PATH = Path(__file__).parent / 'pgid_team_mapping.csv'
+_team_mapping_cache = None
 
 # Name-letter fields are carried as decoded strings, not columns.
 NAME_FIELDS = {f'PF{i:02d}' for i in range(1, 11)} | \
@@ -403,6 +408,27 @@ def load_roster(path):
 
 # ---------------------------------------------------------------- CSV
 
+def _load_team_mapping():
+    """Load pgid -> team name from TEAM_MAPPING_PATH.  A missing or
+    unreadable file degrades to {} (export leaves team blank; import
+    then only accepts empty team values) instead of crashing."""
+    global _team_mapping_cache
+    if _team_mapping_cache is None:
+        mapping = {}
+        try:
+            with open(TEAM_MAPPING_PATH, newline='',
+                      encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    try:
+                        mapping[int(row['pgid'])] = row['team']
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        except OSError:
+            mapping = {}
+        _team_mapping_cache = mapping
+    return _team_mapping_cache
+
+
 def export_csv(source, csv_path):
     """Dump every player to CSV. Returns (rows, named_count)."""
     problems = source.verify()
@@ -411,7 +437,9 @@ def export_csv(source, csv_path):
             "Source failed verification: " + "; ".join(problems))
     cols = _csv_columns(source.fields)
     codes = [_column_code(c) for c in cols[4:]]
+    mapping = _load_team_mapping()
     named = 0
+    unmapped = 0
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         w = csv.writer(f)
         w.writerow(cols)
@@ -419,11 +447,19 @@ def export_csv(source, csv_path):
             first, last = source.get_player_name(i)
             if first or last:
                 named += 1
-            row = [source.pgid(i), '', first, last]
+            pgid = source.pgid(i)
+            team = mapping.get(pgid)
+            if team is None:
+                unmapped += 1
+                team = ''
+            row = [pgid, team, first, last]
             row += [source.get_field(i, code) for code in codes]
             w.writerow(row)
     print(f"Exported {source.record_count} players "
           f"({named} named) to {csv_path}")
+    if unmapped:
+        print(f"Note: {unmapped} player(s) have no team in "
+              f"{TEAM_MAPPING_PATH.name}; team left blank")
     return source.record_count, named
 
 
@@ -570,15 +606,35 @@ def import_csv(source, csv_path):
         else:
             seen[pgid] = n
 
-    # --- team column: v1 has no mapping; non-empty is refused ---
+    # --- team column: derived from PGID via pgid_team_mapping.csv ---
+    # Team is a function of the player ID (TGID = PGID // 70), so a
+    # CSV cannot move a player between teams: the value is checked,
+    # never applied.  Empty is accepted (CSVs exported before the
+    # mapping existed); a non-empty value must match the mapping
+    # exactly or the import is refused.
+    mapping = _load_team_mapping()
     for n, row in enumerate(rows, 2):
         team = (row.get('team') or '').strip()
-        if team:
+        if not team:
+            continue
+        try:
+            pgid = int((row.get('pgid') or '').strip())
+        except ValueError:
+            continue  # already reported above
+        if pgid not in pgid_index:
+            continue  # already reported above
+        expected = mapping.get(pgid)
+        if expected is None:
             errors.append(
-                f"row {n}: team '{team}' cannot be imported yet — "
-                "the team mapping is undecoded (see module docs); "
-                "leave the team column empty")
-            break  # one report is enough; the column is unmapped
+                f"row {n}: team '{team}' cannot be verified — pgid "
+                f"{pgid} is not in {TEAM_MAPPING_PATH.name}; leave "
+                "the team column empty")
+        elif team != expected:
+            errors.append(
+                f"row {n}: team '{team}' does not match pgid {pgid} "
+                f"(expected '{expected}') — team comes from the "
+                "player ID, so a CSV cannot move a player between "
+                "teams")
 
     # --- names + field values ---
     for n, row in enumerate(rows, 2):

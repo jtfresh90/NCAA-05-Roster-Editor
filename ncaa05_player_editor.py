@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 NCAA Football 2005 Player Editor (PyQt5 GUI)
+v1.6.0 - Roster CSV team column (all 7,324 players) + import team validation
 v1.5.0 - Helmets tab (helmet pack + glossy/matte/chrome finishes)
 v1.4.0 - All PLAY fields + generic table editor (GCI)
 
@@ -30,7 +31,7 @@ from PyQt5.QtCore import Qt
 
 # Release version shown in the window title — bump on every release so the
 # EXE always shows which release it was built from.
-VERSION = "v1.5.0"
+VERSION = "v1.6.0"
 
 # Import parsers
 sys.path.insert(0, str(Path(__file__).parent))
